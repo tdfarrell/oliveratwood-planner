@@ -1,6 +1,7 @@
 import { h, append, clear, icon, openDialog, choose, confirmDanger, ask, toast, autosize } from './dom.js';
 import { TEMPLATES, PALETTE, FIELD_TYPES, STATUSES, uid, slugify, numeral, normalize, valueText } from './model.js';
 import { ServerStore, LocalStore, unsaved } from './store.js';
+import { KINDS, FLAVORS, kindForType, generate } from './names.js';
 
 const DEMO = new URLSearchParams(location.search).has('demo');
 const store = DEMO ? new LocalStore() : new ServerStore();
@@ -13,6 +14,7 @@ const S = {
   status: 'saved', statusMsg: '',
   highlight: '', compact: false, worldFilter: '',
   drag: null, route: { view: 'home' },
+  names: { kind: 'person', style: {}, gender: 'any', flavor: 'soft', start: '' },
 };
 
 // ======================================================================
@@ -382,7 +384,9 @@ function render() {
       h('nav', { class: 'tabs', 'aria-label': 'Views' }, tabs.map(([id, label, ic]) =>
         h('a', { class: 'tab' + (activeTab === id ? ' is-on' : ''), href: phref(id === 'grid' ? '' : id), 'aria-current': activeTab === id ? 'page' : null },
           icon(ic), h('span', {}, label)))),
-      h('div', { class: 'top__right' }, searchBox(p), h('span', { id: 'save-status', class: 'status', 'aria-live': 'polite' }))),
+      h('div', { class: 'top__right' }, searchBox(p),
+        h('button', { class: 'iconbtn', type: 'button', title: 'Name generator', 'aria-label': 'Name generator', onclick: () => nameDialog({ kind: S.route.tab === 'world' || S.route.tab === 'e' ? kindForType((p.types.find((t) => t.id === S.route.id) || typeOf(entity(S.route.id)) || {}).name) : undefined, createType: S.route.tab === 'world' ? S.route.id : null }) }, icon('dice')),
+        h('span', { id: 'save-status', class: 'status', 'aria-live': 'polite' }))),
     h('main', { class: 'main main--' + activeTab }, main));
   clear(root).append(shell);
   setStatus(S.status, S.statusMsg);
@@ -945,6 +949,108 @@ function ledgerEditor(p, get, set) {
 }
 
 // ======================================================================
+// Name generator
+// ======================================================================
+
+// onUse: when given, picking a name hands it back (e.g. to name an entry).
+// createType: the entry type preselected for "Create" in browse mode.
+function nameDialog({ kind, onUse, useLabel, createType } = {}) {
+  const p = P();
+  const N = S.names;
+  if (kind && KINDS[kind]) N.kind = kind;
+  let results = [];
+  let createAs = createType || p.types.find((t) => kindForType(t.name) === N.kind)?.id || p.types[0]?.id || '';
+
+  const styleOf = () => N.style[N.kind] || KINDS[N.kind].styles[0][0];
+  const usesFlavor = () => N.kind === 'word' || ['invented', 'realm', 'noble', 'legend', 'ship'].includes(styleOf());
+
+  const kindSel = h('select', { class: 'input', 'aria-label': 'Kind of name', onchange: (e) => { N.kind = e.target.value; createAs = p.types.find((t) => kindForType(t.name) === N.kind)?.id || createAs; drawControls(); roll(); } },
+    Object.entries(KINDS).map(([k, v]) => h('option', { value: k, selected: k === N.kind }, v.label)));
+  const controls = h('div', { class: 'names__controls' });
+  const list = h('div', { class: 'names__list', 'aria-live': 'polite' });
+  const bank = h('div', { class: 'names__bank' });
+
+  const drawControls = () => {
+    clear(controls);
+    const k = KINDS[N.kind];
+    append(controls, [
+      h('label', { class: 'field' }, h('span', { class: 'field__label' }, 'Kind'), kindSel),
+      h('label', { class: 'field' }, h('span', { class: 'field__label' }, 'Style'),
+        h('select', { class: 'input', onchange: (e) => { N.style[N.kind] = e.target.value; drawControls(); roll(); } },
+          k.styles.map(([v, l]) => h('option', { value: v, selected: v === styleOf() }, l)))),
+      k.gender && styleOf() !== 'invented' ? h('label', { class: 'field' }, h('span', { class: 'field__label' }, 'First names'),
+        h('select', { class: 'input', onchange: (e) => { N.gender = e.target.value; roll(); } },
+          [['any', 'Any'], ['f', 'Feminine'], ['m', 'Masculine'], ['n', 'Gender-neutral']].map(([v, l]) => h('option', { value: v, selected: v === N.gender }, l)))) : null,
+      usesFlavor() ? h('label', { class: 'field' }, h('span', { class: 'field__label' }, 'Sound'),
+        h('select', { class: 'input', onchange: (e) => { N.flavor = e.target.value; roll(); } },
+          FLAVORS.map(([v, l]) => h('option', { value: v, selected: v === N.flavor }, l)))) : null,
+      h('label', { class: 'field names__start' }, h('span', { class: 'field__label' }, 'Starts with'),
+        h('input', { class: 'input', value: N.start, maxlength: 4, placeholder: 'Any', 'data-nofocus': '1', oninput: (e) => { N.start = e.target.value.replace(/[^a-z]/gi, ''); roll(); } })),
+    ]);
+  };
+
+  const saved = (n) => p.nameBank.some((x) => x.name === n);
+  const toggleSave = (n) => {
+    change((p) => {
+      if (saved(n)) p.nameBank = p.nameBank.filter((x) => x.name !== n);
+      else p.nameBank.unshift({ name: n, kind: N.kind });
+    }, { render: false });
+    drawList(); drawBank();
+  };
+  const use = (n) => {
+    if (onUse) { onUse(n); d.close(); toast(`Named “${n}”`); return; }
+    const t = p.types.find((x) => x.id === createAs);
+    if (!t) { copy(n); return; }
+    const e = newEntity(t.id, n);
+    d.close();
+    go(`p/${S.slug}/e/${e.id}`);
+    toast(`Created ${lower(t.singular)} “${n}”`);
+  };
+  const copy = async (n) => { try { await navigator.clipboard.writeText(n); toast(`Copied “${n}”`); } catch { toast(n); } };
+  const taken = (n) => p.entities.some((e) => (e.name || '').toLowerCase() === n.toLowerCase());
+
+  const nameRow = (n, { inBank = false } = {}) => h('div', { class: 'names__row' + (taken(n) ? ' is-taken' : '') },
+    h('button', { class: 'names__name', type: 'button', title: onUse ? 'Use this name' : 'Copy', onclick: () => (onUse ? use(n) : copy(n)) }, n),
+    taken(n) ? h('span', { class: 'names__taken' }, 'in use') : null,
+    h('button', { class: 'iconbtn names__star' + (saved(n) ? ' is-on' : ''), type: 'button', 'aria-pressed': String(saved(n)),
+      title: saved(n) ? 'Remove from saved names' : 'Save for later', 'aria-label': saved(n) ? `Unsave ${n}` : `Save ${n}`, onclick: () => toggleSave(n) }, icon(inBank ? 'x' : 'star')),
+    onUse ? null : (p.types.length ? h('button', { class: 'btn btn--ghost btn--sm', type: 'button', title: 'Create an entry with this name', onclick: () => use(n) }, icon('plus'), ' Create') : null));
+
+  const drawList = () => { clear(list); results.forEach((n) => list.append(nameRow(n))); };
+  const drawBank = () => {
+    clear(bank);
+    if (!p.nameBank.length) return;
+    append(bank, [h('h3', { class: 'names__h' }, `Saved names (${p.nameBank.length})`),
+      h('div', { class: 'names__list names__list--bank' }, p.nameBank.map((x) => nameRow(x.name, { inBank: true })))]);
+  };
+  const roll = () => {
+    results = generate(N.kind, styleOf(), { gender: N.gender, flavor: N.flavor, start: N.start }, 12);
+    drawList();
+  };
+
+  const createSel = !onUse && p.types.length ? h('label', { class: 'names__create' }, h('span', { class: 'small muted' }, 'Create as'),
+    h('select', { class: 'input input--sm', onchange: (e) => { createAs = e.target.value; } },
+      p.types.map((t) => h('option', { value: t.id, selected: t.id === createAs }, t.singular)))) : null;
+
+  drawControls(); roll(); drawBank();
+  const d = openDialog({
+    title: useLabel || 'Name generator',
+    wide: true,
+    className: 'dlg--names',
+    body: [
+      controls,
+      h('p', { class: 'small muted names__tip' }, onUse ? 'Click a name to use it. Star the ones worth keeping.' : 'Click a name to copy it, star it to save it for later, or create an entry with it.'),
+      list, bank,
+    ],
+    actions: [
+      createSel,
+      h('span', { class: 'spacer' }),
+      h('button', { class: 'btn btn--primary', type: 'button', onclick: roll }, icon('dice'), ' More names'),
+    ],
+  });
+}
+
+// ======================================================================
 // World
 // ======================================================================
 
@@ -989,6 +1095,7 @@ function viewWorld(p, typeId) {
         h('h1', { class: 'display' }, t.name),
         h('span', { class: 'spacer' }),
         all.length > 6 ? h('div', { class: 'world__filter' }, filter) : null,
+        h('button', { class: 'btn btn--sm', type: 'button', onclick: () => nameDialog({ kind: kindForType(t.name), createType: t.id }) }, icon('dice'), ' Name ideas'),
         h('button', { class: 'btn btn--primary btn--sm', type: 'button', onclick: () => { const e = newEntity(t.id); go(`p/${S.slug}/e/${e.id}`); } }, icon('plus'), ` New ${lower(t.singular)}`)),
       all.length ? grid : h('p', { class: 'muted' }, `No ${lower(t.name)} yet. Add one here, or type a new name into “In this scene” on any card.`)));
 }
@@ -1012,8 +1119,12 @@ function viewEntity(p, id) {
   const typeSel = h('select', { class: 'input input--sm', 'aria-label': 'Type', onchange: (ev) => { change(() => { e.typeId = ev.target.value; }); } },
     p.types.map((x) => h('option', { value: x.id, selected: x.id === e.typeId }, x.singular)));
 
+  const nameInput = h('input', { class: 'title-input', value: e.name, placeholder: `Name this ${lower(t?.singular || 'entry')}`, 'aria-label': 'Name', oninput: (ev) => upd((e) => { e.name = ev.target.value; }) });
   const form = h('div', { class: 'entity__form' },
-    h('input', { class: 'title-input', value: e.name, placeholder: `Name this ${lower(t?.singular || 'entry')}`, 'aria-label': 'Name', oninput: (ev) => upd((e) => { e.name = ev.target.value; }) }),
+    h('div', { class: 'entity__name' }, nameInput,
+      h('button', { class: 'iconbtn iconbtn--dice', type: 'button', title: 'Suggest a name', 'aria-label': 'Suggest a name',
+        onclick: () => nameDialog({ kind: kindForType(t?.name), useLabel: `Name this ${lower(t?.singular || 'entry')}`,
+          onUse: (n) => { upd((e) => { e.name = n; }); nameInput.value = n; } }) }, icon('dice'))),
     h('input', { class: 'input input--lede', value: e.summary, placeholder: 'In one line: who or what this is', 'aria-label': 'One-line summary', oninput: (ev) => upd((e) => { e.summary = ev.target.value; }) }),
     (t?.fields || []).map((f) => fieldInput(p, f, () => e.fields[f.id], (v) => upd((e) => { e.fields[f.id] = v; }))),
     h('label', { class: 'field' }, h('span', { class: 'field__label' }, 'Notes'),

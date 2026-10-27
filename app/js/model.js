@@ -76,6 +76,7 @@ function baseProject(title) {
     types: [],
     entities: [],
     notes: '',
+    nameBank: [],
   };
 }
 
@@ -205,6 +206,7 @@ export function normalize(p) {
   p.labels = Object.assign({ column: 'Part', row: 'Thread', numerals: 'roman' }, p.labels);
   for (const k of ['columns', 'rows', 'cards', 'cardFields', 'types', 'entities']) p[k] = Array.isArray(p[k]) ? p[k] : [];
   p.notes = p.notes || '';
+  p.nameBank = Array.isArray(p.nameBank) ? p.nameBank : [];
   for (const c of p.cards) {
     c.entityIds = c.entityIds || [];
     c.fields = c.fields || {};
