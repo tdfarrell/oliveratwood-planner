@@ -1,0 +1,5 @@
+# Written by the deploy workflow from the PLANNER_PASSWORD secret; never commit
+app/config.php
+# Projects live on the server, not in git
+app/data/
+.dev/

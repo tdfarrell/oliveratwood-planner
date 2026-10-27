@@ -1,0 +1,21 @@
+# Oliver Atwood Planner: settings for Bluehost (Apache)
+
+Options -Indexes
+DirectoryIndex index.html
+
+# Keep the planner out of search engines, and always fetch the newest app files
+<IfModule mod_headers.c>
+  Header set X-Robots-Tag "noindex, nofollow"
+  Header set Cache-Control "no-cache"
+  Header set X-Content-Type-Options "nosniff"
+  Header set Referrer-Policy "same-origin"
+</IfModule>
+<IfModule mod_expires.c>
+  ExpiresActive Off
+</IfModule>
+
+# Only the app's own files are reachable; config and data are never served
+<FilesMatch "^(config\.php|\.ftp-deploy-sync-state\.json)$">
+  Require all denied
+</FilesMatch>
+RedirectMatch 404 ^/planner/data(/|$)

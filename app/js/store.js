@@ -1,139 +1,73 @@
 // Where projects are kept.
 //
-// GitHubStore keeps one JSON file per project at data/projects/<slug>.json in a
-// (private) GitHub repository, using a fine-grained personal access token with
-// "Contents: Read and write" on that repository. Every save is a commit, so the
-// repository's history doubles as version history and backup.
+// ServerStore talks to api.php next to this page, which keeps one file per
+// project on the web host (behind the planner password) plus rolling backups.
 //
 // LocalStore keeps everything in this browser only. It is used by the ?demo mode.
-
-const API = 'https://api.github.com';
-const DIR = 'data/projects';
-
-function b64encode(str) {
-  const bytes = new TextEncoder().encode(str);
-  let bin = '';
-  for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
-  return btoa(bin);
-}
-function b64decode(b64) {
-  const bin = atob(b64.replace(/\s/g, ''));
-  const bytes = new Uint8Array(bin.length);
-  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-  return new TextDecoder().decode(bytes);
-}
 
 export class StoreError extends Error {
   constructor(message, status, kind) { super(message); this.status = status; this.kind = kind; }
 }
 
-export class GitHubStore {
-  constructor({ token, repo, branch }) {
-    this.token = token;
-    this.repo = repo.trim().replace(/^https?:\/\/github\.com\//, '').replace(/\.git$/, '').replace(/\/$/, '');
-    this.branch = branch || null;
-    this.label = this.repo;
-  }
+export class ServerStore {
+  constructor(base = 'api.php') { this.base = base; this.label = 'oliveratwood.com'; }
 
-  async req(path, opts = {}) {
+  async req(action, { method = 'GET', params = {}, body } = {}) {
+    const qs = new URLSearchParams({ action, ...params });
     let res;
     try {
-      res = await fetch(API + path, {
-        ...opts,
+      res = await fetch(`${this.base}?${qs}`, {
+        method,
         cache: 'no-store',
-        headers: {
-          Authorization: `Bearer ${this.token}`,
-          Accept: 'application/vnd.github+json',
-          'X-GitHub-Api-Version': '2022-11-28',
-          ...(opts.body ? { 'Content-Type': 'application/json' } : {}),
-        },
+        credentials: 'same-origin',
+        headers: { 'X-Planner': '1', ...(body ? { 'Content-Type': 'application/json' } : {}) },
+        body: body ? JSON.stringify(body) : undefined,
       });
-    } catch (e) {
-      throw new StoreError('Can’t reach GitHub. Check your connection.', 0, 'offline');
+    } catch {
+      throw new StoreError('Can’t reach the server. Check your connection.', 0, 'offline');
     }
-    if (res.status === 204) return null;
-    let body = null;
-    try { body = await res.json(); } catch { /* empty */ }
-    if (!res.ok) {
-      const msg = (body && body.message) || res.statusText;
-      let kind = 'error';
-      if (res.status === 401) kind = 'auth';
-      else if (res.status === 409 || (res.status === 422 && /sha/i.test(msg))) kind = 'conflict';
-      else if (res.status === 404) kind = 'missing';
-      else if (res.status === 403 && /rate limit/i.test(msg)) kind = 'rate';
-      throw new StoreError(msg, res.status, kind);
+    let data = null;
+    try { data = await res.json(); } catch { /* not JSON */ }
+    if (!res.ok || !data) {
+      if (!data && res.ok) throw new StoreError('The server sent back something unexpected. Is PHP running on this host?', res.status, 'error');
+      throw new StoreError((data && data.error) || `Server error (${res.status})`, res.status, (data && data.kind) || (res.status >= 500 ? 'server' : 'error'));
     }
-    return body;
+    return data;
   }
 
-  ref() { return this.branch ? `?ref=${encodeURIComponent(this.branch)}` : ''; }
-
-  // Confirms the token works and can write. Returns { private, branch }.
-  async check() {
-    let info;
-    try { info = await this.req(`/repos/${this.repo}`); }
-    catch (e) {
-      if (e.kind === 'auth') throw new StoreError('GitHub didn’t accept that token. It may be mistyped or expired.', 401, 'auth');
-      if (e.kind === 'missing') throw new StoreError(`Couldn’t find ${this.repo}. Check the name, and that the token was given access to it.`, 404, 'missing');
-      throw e;
-    }
-    if (info.permissions && info.permissions.push === false) {
-      throw new StoreError('That token can read the repository but not save to it. Give it “Contents: Read and write”.', 403, 'auth');
-    }
-    this.branch = this.branch || info.default_branch || 'main';
-    return { private: !!info.private, branch: this.branch };
+  status() { return this.req('status'); }
+  async login(password) { await this.req('login', { method: 'POST', body: { password } }); }
+  async logout() { await this.req('logout', { method: 'POST', body: {} }); }
+  async list() { return (await this.req('list')).projects; }
+  async read(slug) { const r = await this.req('read', { params: { slug } }); return { data: r.data, sha: r.rev }; }
+  async write(slug, data, sha) {
+    const r = await this.req('write', { method: 'POST', params: { slug }, body: { data, rev: sha || null } });
+    return r.rev;
   }
-
-  async list() {
-    try {
-      const items = await this.req(`/repos/${this.repo}/contents/${DIR}${this.ref()}`);
-      return items.filter((i) => i.type === 'file' && i.name.endsWith('.json'))
-        .map((i) => ({ slug: i.name.replace(/\.json$/, ''), sha: i.sha }));
-    } catch (e) {
-      if (e.kind === 'missing') return [];
-      throw e;
-    }
-  }
-
-  async read(slug) {
-    const f = await this.req(`/repos/${this.repo}/contents/${DIR}/${encodeURIComponent(slug)}.json${this.ref()}`);
-    let content = f.content;
-    if (!content || f.encoding === 'none') {
-      const blob = await this.req(`/repos/${this.repo}/git/blobs/${f.sha}`);
-      content = blob.content;
-    }
-    return { data: JSON.parse(b64decode(content)), sha: f.sha };
-  }
-
-  async write(slug, data, sha, message) {
-    const body = {
-      message,
-      content: b64encode(JSON.stringify(data, null, 1) + '\n'),
-      ...(sha ? { sha } : {}),
-      ...(this.branch ? { branch: this.branch } : {}),
-    };
-    const r = await this.req(`/repos/${this.repo}/contents/${DIR}/${encodeURIComponent(slug)}.json`, {
-      method: 'PUT', body: JSON.stringify(body),
-    });
-    return r.content.sha;
-  }
-
-  async remove(slug, sha, message) {
-    await this.req(`/repos/${this.repo}/contents/${DIR}/${encodeURIComponent(slug)}.json`, {
-      method: 'DELETE',
-      body: JSON.stringify({ message, sha, ...(this.branch ? { branch: this.branch } : {}) }),
-    });
-  }
+  async remove(slug) { await this.req('delete', { method: 'POST', params: { slug }, body: {} }); }
+  async backups(slug) { return (await this.req('backups', { params: { slug } })).backups; }
+  async backup(slug, id) { return (await this.req('backup', { params: { slug, id } })).data; }
+  async deleted() { return (await this.req('deleted')).projects; }
 }
 
 export class LocalStore {
   constructor() { this.label = 'this browser (demo)'; this.key = 'planner:demo:'; }
-  async check() { return { private: true, branch: 'local' }; }
+  async status() { return { configured: true, authed: true }; }
+  async login() {}
+  async logout() {}
+  async backups() { return []; }
+  async backup() { return null; }
+  async deleted() { return []; }
   all() {
     try { return JSON.parse(localStorage.getItem(this.key + 'projects') || '{}'); } catch { return {}; }
   }
   put(all) { localStorage.setItem(this.key + 'projects', JSON.stringify(all)); }
-  async list() { return Object.entries(this.all()).map(([slug, v]) => ({ slug, sha: v.sha })); }
+  async list() {
+    return Object.entries(this.all()).map(([slug, v]) => ({
+      slug, rev: v.sha, title: v.data.title, synopsis: v.data.synopsis || '', updated: v.updated || '',
+      counts: { cards: v.data.cards.length, entities: v.data.entities.length, columns: v.data.columns.length },
+    }));
+  }
   async read(slug) {
     const v = this.all()[slug];
     if (!v) throw new StoreError('Not found', 404, 'missing');
@@ -143,7 +77,8 @@ export class LocalStore {
     const all = this.all();
     if (all[slug] && all[slug].sha !== sha) throw new StoreError('Changed elsewhere', 409, 'conflict');
     const next = Math.random().toString(36).slice(2);
-    all[slug] = { data, sha: next };
+    if (!all[slug] && sha) throw new StoreError('Deleted elsewhere', 409, 'conflict');
+    all[slug] = { data, sha: next, updated: new Date().toISOString() };
     this.put(all);
     return next;
   }

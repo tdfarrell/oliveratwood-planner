@@ -1,0 +1,66 @@
+# Uploads the planner to oliveratwood.com/planner whenever the app changes.
+#
+# Needs four repository secrets (Settings → Secrets and variables → Actions):
+#   FTP_SERVER, FTP_USERNAME, FTP_PASSWORD   same values as the main oliveratwood repo
+#   PLANNER_PASSWORD                         the password for signing in to the planner
+# Optional:
+#   FTP_SERVER_DIR   same as the main repo, if you set one there (must end in /)
+#
+# Your projects are saved on the server in planner/data/ by api.php. They are never
+# in this repository, and this upload never touches them.
+
+name: Publish planner
+
+on:
+  push:
+    branches: [main]
+    paths: ['app/**', '.github/workflows/deploy.yml']
+  workflow_dispatch:
+
+concurrency:
+  group: publish-planner
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    env:
+      FTP_SERVER: ${{ secrets.FTP_SERVER }}
+      FTP_USERNAME: ${{ secrets.FTP_USERNAME }}
+      FTP_PASSWORD: ${{ secrets.FTP_PASSWORD }}
+      PLANNER_PASSWORD: ${{ secrets.PLANNER_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check the secrets are set
+        run: |
+          missing=""
+          [ -z "$FTP_SERVER" ] && missing="$missing FTP_SERVER"
+          [ -z "$FTP_USERNAME" ] && missing="$missing FTP_USERNAME"
+          [ -z "$FTP_PASSWORD" ] && missing="$missing FTP_PASSWORD"
+          [ -z "$PLANNER_PASSWORD" ] && missing="$missing PLANNER_PASSWORD"
+          if [ -n "$missing" ]; then
+            echo "::error::Add these repository secrets, then run this workflow again:$missing"
+            exit 1
+          fi
+
+      - name: Write the password file
+        run: |
+          php -r '$h = password_hash(getenv("PLANNER_PASSWORD"), PASSWORD_DEFAULT); file_put_contents("app/config.php", "<?php\nreturn [\"password_hash\" => " . var_export($h, true) . "];\n");'
+          php -l app/config.php
+          php -l app/api.php
+
+      - name: Upload to Bluehost
+        uses: SamKirkland/FTP-Deploy-Action@v4.4.0
+        with:
+          server: ${{ secrets.FTP_SERVER }}
+          username: ${{ secrets.FTP_USERNAME }}
+          password: ${{ secrets.FTP_PASSWORD }}
+          protocol: ftps
+          port: 21
+          local-dir: ./app/
+          server-dir: ${{ format('{0}planner/', secrets.FTP_SERVER_DIR || './') }}
+          exclude: |
+            **/.git*
+            **/.git*/**
+            data/**
