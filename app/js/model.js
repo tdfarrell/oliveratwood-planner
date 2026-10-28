@@ -77,6 +77,7 @@ function baseProject(title) {
     rows: [],
     cards: [],
     cardFields: [],
+    acts: [],
     types: [],
     entities: [],
     notes: '',
@@ -161,8 +162,9 @@ export const TEMPLATES = {
     blurb: 'Chapters across the top, POV characters down the side.',
     make(title) {
       const p = baseProject(title);
-      p.labels = { column: 'Chapter', row: 'POV', numerals: 'arabic' };
-      p.columns = [1, 2, 3, 4, 5].map(() => ({ id: uid(), title: '', teaser: '', recap: '', notes: '', date: '', canon: false }));
+      p.labels = { column: 'Chapter', row: 'POV', numerals: 'arabic', act: 'Act', useActs: true };
+      p.acts = [{ id: uid(), title: 'Setup', notes: '' }, { id: uid(), title: 'Confrontation', notes: '' }, { id: uid(), title: 'Resolution', notes: '' }];
+      p.columns = [0, 0, 1, 1, 2].map((a) => ({ id: uid(), actId: p.acts[a].id, title: '', teaser: '', recap: '', notes: '', date: '', canon: false }));
       p.rows = [
         { id: uid(), title: 'Protagonist', color: PALETTE[0] },
         { id: uid(), title: 'Second POV', color: PALETTE[1] },
@@ -207,8 +209,9 @@ export function normalize(p) {
   p.title = p.title || 'Untitled';
   p.synopsis = p.synopsis || '';
   p.storySlug = p.storySlug || slugify(p.title);
-  p.labels = Object.assign({ column: 'Part', row: 'Thread', numerals: 'roman' }, p.labels);
-  for (const k of ['columns', 'rows', 'cards', 'cardFields', 'types', 'entities']) p[k] = Array.isArray(p[k]) ? p[k] : [];
+  p.labels = Object.assign({ column: 'Part', row: 'Thread', numerals: 'roman', act: 'Act', useActs: false }, p.labels);
+  for (const k of ['columns', 'rows', 'cards', 'cardFields', 'types', 'entities', 'acts']) p[k] = Array.isArray(p[k]) ? p[k] : [];
+  syncActs(p);
   p.notes = p.notes || '';
   p.nameBank = Array.isArray(p.nameBank) ? p.nameBank : [];
   for (const c of p.cards) {
@@ -228,4 +231,25 @@ export function valueText(project, field, v) {
   if (field.type === 'ledger') return (v || []).map((r) => r.text + ' ' + (r.note || '')).join(' ');
   if (Array.isArray(v)) return v.join(' ');
   return String(v);
+}
+
+// ---------- Acts ----------
+
+export const actsOn = (p) => !!(p.labels.useActs && p.acts.length);
+
+// Keeps acts and columns consistent: at least one act when acts are on, every
+// column in a real act, and columns ordered act by act (keeping their order
+// within each act).
+export function syncActs(p) {
+  if (!p.labels.useActs) return p;
+  if (!p.acts.length) p.acts.push({ id: uid(), title: '', notes: '' });
+  const ids = new Set(p.acts.map((a) => a.id));
+  let prev = p.acts[0].id;
+  for (const c of p.columns) {
+    if (!ids.has(c.actId)) c.actId = prev;
+    prev = c.actId;
+  }
+  const order = new Map(p.acts.map((a, i) => [a.id, i]));
+  p.columns = p.columns.map((c, i) => [c, i]).sort((x, y) => order.get(x[0].actId) - order.get(y[0].actId) || x[1] - y[1]).map(([c]) => c);
+  return p;
 }

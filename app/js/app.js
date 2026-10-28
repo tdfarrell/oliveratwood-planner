@@ -1,5 +1,5 @@
 import { h, append, clear, icon, openDialog, choose, confirmDanger, ask, toast, autosize } from './dom.js';
-import { TEMPLATES, PALETTE, FIELD_TYPES, STATUSES, STATUS_SHORT, uid, slugify, numeral, normalize, valueText } from './model.js';
+import { TEMPLATES, PALETTE, FIELD_TYPES, STATUSES, STATUS_SHORT, uid, slugify, numeral, roman, normalize, valueText, actsOn, syncActs } from './model.js';
 import { ServerStore, LocalStore, unsaved } from './store.js';
 import { KINDS, FLAVORS, kindForType, generate } from './names.js';
 
@@ -13,7 +13,7 @@ const S = {
   dirty: false, saving: false, again: false, timer: null,
   status: 'saved', statusMsg: '',
   highlight: '', statusFilter: '', compact: false, worldFilter: '',
-  drag: null, route: { view: 'home' },
+  drag: null, dragItem: null, route: { view: 'home' },
   names: { kind: 'person', style: {}, gender: 'any', flavor: 'soft', start: '' },
 };
 
@@ -25,7 +25,7 @@ const P = () => S.project;
 const entity = (id) => P().entities.find((e) => e.id === id);
 const typeOf = (e) => e && P().types.find((t) => t.id === e.typeId);
 const colIndex = (id) => P().columns.findIndex((c) => c.id === id);
-const lower = (s) => s.charAt(0).toLowerCase() + s.slice(1);
+const lower = (s) => (s.length > 1 && s === s.toUpperCase() ? s : s.charAt(0).toLowerCase() + s.slice(1));
 const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
 const colName = (p, c) => `${p.labels.column} ${numeral(p, colIndex(c.id))}`;
 
@@ -467,16 +467,27 @@ function viewGrid(p) {
       })),
     h('label', { class: 'check' }, h('input', { type: 'checkbox', checked: S.compact, onchange: (e) => { S.compact = e.target.checked; render(); } }), ' Titles only'),
     h('span', { class: 'spacer' }),
-    h('button', { class: 'btn btn--sm', type: 'button', onclick: addRow }, icon('plus'), ` ${p.labels.row}`),
-    h('button', { class: 'btn btn--sm', type: 'button', onclick: addColumn }, icon('plus'), ` ${p.labels.column}`));
+    actsOn(p) ? h('button', { class: 'btn btn--sm', type: 'button', onclick: addAct }, icon('plus'), ` ${p.labels.act}`) : null,
+    h('button', { class: 'btn btn--sm', type: 'button', onclick: () => addColumn() }, icon('plus'), ` ${p.labels.column}`),
+    h('button', { class: 'btn btn--sm', type: 'button', onclick: addRow }, icon('plus'), ` ${p.labels.row}`));
 
-  const grid = h('div', { class: 'grid' + (S.compact ? ' is-compact' : ''), style: { '--cols': p.columns.length } });
+  const useActs = actsOn(p);
+  // A slot is one grid column: a real column, or the placeholder of an empty act.
+  const slots = useActs
+    ? p.acts.flatMap((a) => { const cs = p.columns.filter((c) => c.actId === a.id); return cs.length ? cs.map((c) => ({ c })) : [{ act: a }]; })
+    : p.columns.map((c) => ({ c }));
+  const grid = h('div', { class: 'grid' + (S.compact ? ' is-compact' : '') + (useActs ? ' has-acts' : ''), style: { '--cols': slots.length } });
+  if (useActs) {
+    grid.append(h('div', { class: 'grid__actcorner' }));
+    p.acts.forEach((a, i) => grid.append(actHeader(p, a, i)));
+    grid.append(h('button', { class: 'grid__addact', type: 'button', onclick: addAct, title: `Add ${lower(p.labels.act)}`, 'aria-label': `Add ${lower(p.labels.act)}` }, icon('plus')));
+  }
   grid.append(h('div', { class: 'grid__corner' }, h('span', {}, `${p.labels.row}s`), h('span', { class: 'muted' }, ` / ${p.labels.column}s`)));
-  p.columns.forEach((c, i) => grid.append(colHeader(p, c, i)));
-  grid.append(h('button', { class: 'grid__addcol', type: 'button', onclick: addColumn, 'aria-label': `Add ${lower(p.labels.column)}` }, icon('plus')));
+  for (const sl of slots) grid.append(sl.c ? colHeader(p, sl.c, colIndex(sl.c.id)) : emptyActHead(p, sl.act));
+  grid.append(h('button', { class: 'grid__addcol', type: 'button', onclick: () => addColumn(), 'aria-label': `Add ${lower(p.labels.column)}` }, icon('plus')));
   for (const r of p.rows) {
     grid.append(rowHeader(p, r));
-    for (const c of p.columns) grid.append(cell(p, c, r));
+    for (const sl of slots) grid.append(sl.c ? cell(p, sl.c, r) : h('div', { class: 'cell cell--void' }));
     grid.append(h('div', { class: 'grid__pad' }));
   }
   grid.append(h('button', { class: 'grid__addrow', type: 'button', onclick: addRow }, icon('plus'), ` Add ${lower(p.labels.row)}`));
@@ -489,27 +500,149 @@ function viewGrid(p) {
 
 function colHeader(p, c, i) {
   const n = p.cards.filter((k) => k.colId === c.id).length;
-  return h('div', { class: 'colhead' + (c.canon ? ' is-canon' : ''), role: 'button', tabindex: '0', title: `Edit ${lower(p.labels.column)}`,
+  const el = h('div', { class: 'colhead' + (c.canon ? ' is-canon' : ''), role: 'button', tabindex: '0', title: `Edit ${lower(p.labels.column)} (drag to move)`,
     onclick: () => editColumn(c.id), onkeydown: (e) => { if (e.key === 'Enter') editColumn(c.id); } },
+  icon('grip', 'grip'),
   h('span', { class: 'colhead__num' }, numeral(p, i)),
   h('span', { class: 'colhead__text' },
     h('span', { class: 'colhead__title' + (c.title ? '' : ' muted') }, c.title || `${p.labels.column} ${numeral(p, i)}`),
     h('span', { class: 'colhead__meta' },
       c.canon ? h('span', { class: 'pill pill--canon' }, icon('lock'), 'Published') : null,
       h('span', {}, plural(n, 'card'))),
-    n ? h('span', { class: 'statusbar', title: STATUSES.map(([v, l]) => [l, p.cards.filter((k) => k.colId === c.id && k.status === v).length]).filter(([, x]) => x).map(([l, x]) => `${l}: ${x}`).join(' · ') },
+    h('span', { class: 'statusbar' + (n ? '' : ' statusbar--empty'), title: STATUSES.map(([v, l]) => [l, p.cards.filter((k) => k.colId === c.id && k.status === v).length]).filter(([, x]) => x).map(([l, x]) => `${l}: ${x}`).join(' · ') },
       STATUSES.map(([v]) => {
         const x = p.cards.filter((k) => k.colId === c.id && k.status === v).length;
         return x ? h('span', { class: 'statusbar__seg st-' + v, style: { flexGrow: String(x) } }) : null;
-      })) : null));
+      }))));
+  dragSource(el, 'col', c.id);
+  dropTarget(el, { col: 'x' }, (it, after) => moveColumn(it.id, c.id, after));
+  return el;
+}
+
+function actHeader(p, a, i) {
+  const cols = p.columns.filter((c) => c.actId === a.id);
+  const first = colIndex(cols[0]?.id), last = colIndex(cols[cols.length - 1]?.id);
+  const el = h('div', { class: 'acthead' + (i % 2 ? ' acthead--alt' : ''), role: 'button', tabindex: '0', style: { gridColumn: `span ${Math.max(1, cols.length)}` }, title: `Edit ${lower(p.labels.act)} (drag to move)`,
+    onclick: () => editAct(a.id), onkeydown: (e) => { if (e.key === 'Enter') editAct(a.id); } },
+  icon('grip', 'grip'),
+  h('span', { class: 'acthead__num' }, `${p.labels.act} ${roman(i + 1)}`),
+  a.title ? h('span', { class: 'acthead__title' }, a.title) : null,
+  h('span', { class: 'spacer' }),
+  cols.length ? h('span', { class: 'acthead__range' }, first === last ? `${p.labels.column} ${numeral(p, first)}` : `${p.labels.column}s ${numeral(p, first)}–${numeral(p, last)}`) : null);
+  dragSource(el, 'act', a.id);
+  dropTarget(el, { act: 'x', col: 'into' }, (it, after) => {
+    if (it.kind === 'act') moveAct(it.id, a.id, after);
+    else change((p) => { const c = p.columns.find((x) => x.id === it.id); const [x] = p.columns.splice(p.columns.indexOf(c), 1); x.actId = a.id; p.columns.push(x); syncActs(p); });
+  });
+  return el;
+}
+
+function emptyActHead(p, a) {
+  const el = h('div', { class: 'colhead colhead--empty' },
+    h('button', { class: 'btn btn--ghost btn--sm', type: 'button', onclick: () => addColumn(a.id) }, icon('plus'), ` ${p.labels.column}`));
+  dropTarget(el, { col: 'into' }, (it) => change((p) => { const c = p.columns.find((x) => x.id === it.id); c.actId = a.id; syncActs(p); }));
+  return el;
+}
+
+// ---------- Dragging columns, acts and rows ----------
+
+function clearDrops() {
+  document.querySelectorAll('.drop-left, .drop-right, .drop-above, .drop-below, .drop-into')
+    .forEach((x) => x.classList.remove('drop-left', 'drop-right', 'drop-above', 'drop-below', 'drop-into'));
+}
+
+function dragSource(el, kind, id) {
+  el.draggable = true;
+  el.addEventListener('dragstart', (e) => {
+    S.dragItem = { kind, id };
+    e.dataTransfer.effectAllowed = 'move';
+    e.dataTransfer.setData('text/plain', id);
+    requestAnimationFrame(() => el.classList.add('is-dragging'));
+  });
+  el.addEventListener('dragend', () => { S.dragItem = null; el.classList.remove('is-dragging'); clearDrops(); });
+}
+
+// modes: { kind: 'x' | 'y' | 'into' }; onDrop(item, after)
+function dropTarget(el, modes, onDrop) {
+  const where = (e, mode) => {
+    if (mode === 'into') return 'drop-into';
+    const b = el.getBoundingClientRect();
+    if (mode === 'x') return e.clientX > b.left + b.width / 2 ? 'drop-right' : 'drop-left';
+    return e.clientY > b.top + b.height / 2 ? 'drop-below' : 'drop-above';
+  };
+  el.addEventListener('dragover', (e) => {
+    const it = S.dragItem;
+    if (!it || !modes[it.kind]) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+    const cls = where(e, modes[it.kind]);
+    if (!el.classList.contains(cls)) { clearDrops(); el.classList.add(cls); }
+  });
+  el.addEventListener('dragleave', (e) => { if (!el.contains(e.relatedTarget)) el.classList.remove('drop-left', 'drop-right', 'drop-above', 'drop-below', 'drop-into'); });
+  el.addEventListener('drop', (e) => {
+    const it = S.dragItem;
+    if (!it || !modes[it.kind]) return;
+    e.preventDefault();
+    const after = el.classList.contains('drop-right') || el.classList.contains('drop-below');
+    clearDrops();
+    S.dragItem = null;
+    onDrop(it, after);
+  });
+}
+
+function moveColumn(id, targetId, after) {
+  if (id === targetId) return;
+  change((p) => {
+    const i = p.columns.findIndex((x) => x.id === id);
+    const [c] = p.columns.splice(i, 1);
+    const t = p.columns.find((x) => x.id === targetId);
+    c.actId = t.actId;
+    p.columns.splice(p.columns.indexOf(t) + (after ? 1 : 0), 0, c);
+    syncActs(p);
+  });
+}
+
+function moveAct(id, targetId, after) {
+  if (id === targetId) return;
+  change((p) => {
+    const [a] = p.acts.splice(p.acts.findIndex((x) => x.id === id), 1);
+    p.acts.splice(p.acts.findIndex((x) => x.id === targetId) + (after ? 1 : 0), 0, a);
+    syncActs(p);
+  });
+}
+
+function moveRow(id, targetId, after) {
+  if (id === targetId) return;
+  change((p) => {
+    const [r] = p.rows.splice(p.rows.findIndex((x) => x.id === id), 1);
+    p.rows.splice(p.rows.findIndex((x) => x.id === targetId) + (after ? 1 : 0), 0, r);
+  });
+}
+
+// Moves a column one step; crossing into a neighboring act joins that act.
+function stepColumn(id, dir) {
+  change((p) => {
+    const i = p.columns.findIndex((x) => x.id === id);
+    const j = i + dir;
+    if (j < 0 || j >= p.columns.length) return;
+    const c = p.columns[i], n = p.columns[j];
+    if (actsOn(p) && n.actId !== c.actId) c.actId = n.actId;
+    else { p.columns[i] = n; p.columns[j] = c; }
+    syncActs(p);
+  });
 }
 
 function rowHeader(p, r) {
   const n = p.cards.filter((k) => k.rowId === r.id).length;
-  return h('div', { class: 'rowhead', role: 'button', tabindex: '0', style: { '--c': r.color }, title: `Edit ${lower(p.labels.row)}`,
+  const el = h('div', { class: 'rowhead', role: 'button', tabindex: '0', style: { '--c': r.color }, title: `Edit ${lower(p.labels.row)} (drag to move)`,
     onclick: () => editRow(r.id), onkeydown: (e) => { if (e.key === 'Enter') editRow(r.id); } },
-  h('span', { class: 'rowhead__title' }, r.title || 'Untitled'),
-  h('span', { class: 'rowhead__meta' }, plural(n, 'card')));
+  icon('grip', 'grip'),
+  h('span', { class: 'rowhead__text' },
+    h('span', { class: 'rowhead__title' }, r.title || 'Untitled'),
+    h('span', { class: 'rowhead__meta' }, plural(n, 'card'))));
+  dragSource(el, 'row', r.id);
+  dropTarget(el, { row: 'y' }, (it, after) => moveRow(it.id, r.id, after));
+  return el;
 }
 
 function cell(p, c, r) {
@@ -591,9 +724,61 @@ function moveCard(id, colId, rowId, beforeId) {
   });
 }
 
-function addColumn() {
-  change((p) => p.columns.push({ id: uid(), title: '', teaser: '', recap: '', notes: '', date: '', canon: false }));
+function addColumn(actId) {
+  const p = P();
+  const act = actsOn(p) ? (actId || p.acts[p.acts.length - 1].id) : undefined;
+  change((p) => {
+    p.columns.push({ id: uid(), actId: act, title: '', teaser: '', recap: '', notes: '', date: '', canon: false });
+    syncActs(p);
+  });
+  if (!actId) requestAnimationFrame(() => { const s = document.querySelector('.grid-scroll'); if (s) s.scrollLeft = s.scrollWidth; });
+}
+
+function addAct() {
+  const id = uid();
+  change((p) => {
+    p.acts.push({ id, title: '', notes: '' });
+    p.columns.push({ id: uid(), actId: id, title: '', teaser: '', recap: '', notes: '', date: '', canon: false });
+    syncActs(p);
+  });
   requestAnimationFrame(() => { const s = document.querySelector('.grid-scroll'); if (s) s.scrollLeft = s.scrollWidth; });
+  editAct(id);
+}
+
+function editAct(id) {
+  const p = P();
+  const a = () => p.acts.find((x) => x.id === id);
+  if (!a()) return;
+  const i = p.acts.findIndex((x) => x.id === id);
+  const n = p.columns.filter((c) => c.actId === id).length;
+  const upd = (fn) => change(() => fn(a()), { render: false });
+  const label = `${p.labels.act} ${roman(i + 1)}`;
+  const d = openDialog({
+    title: label,
+    body: [
+      h('label', { class: 'field' }, h('span', { class: 'field__label' }, 'Name'),
+        h('input', { class: 'input input--title', value: a().title, placeholder: 'e.g. The Fog', oninput: (e) => upd((a) => { a.title = e.target.value; }) })),
+      h('label', { class: 'field' }, h('span', { class: 'field__label' }, 'Notes'),
+        autosize(h('textarea', { class: 'input', rows: 3, value: a().notes || '', placeholder: `What this ${lower(p.labels.act)} has to accomplish, where it turns`, oninput: (e) => upd((a) => { a.notes = e.target.value; }) }))),
+    ],
+    actions: [
+      h('button', { class: 'btn btn--ghost btn--danger', type: 'button', onclick: async () => {
+        d.close();
+        if (p.acts.length === 1) { toast(`To remove the last ${lower(p.labels.act)}, turn off acts in the Project tab.`); return; }
+        const into = p.acts[i > 0 ? i - 1 : 1];
+        const intoName = `${p.labels.act} ${roman((i > 0 ? i - 1 : 1) + 1)}`;
+        if (await confirmDanger(`Delete ${label}?`, n ? `Its ${plural(n, lower(p.labels.column))} and their cards stay, and move into ${intoName}.` : `It has no ${lower(p.labels.column)}s.`)) {
+          change((p) => { for (const c of p.columns) if (c.actId === id) c.actId = into.id; p.acts = p.acts.filter((x) => x.id !== id); syncActs(p); });
+        }
+      } }, icon('trash'), ' Delete'),
+      h('button', { class: 'iconbtn', type: 'button', 'aria-label': 'Move earlier', title: 'Move earlier', disabled: i === 0, onclick: () => { d.close(); moveAct(id, p.acts[i - 1].id, false); } }, icon('left')),
+      h('button', { class: 'iconbtn', type: 'button', 'aria-label': 'Move later', title: 'Move later', disabled: i === p.acts.length - 1, onclick: () => { d.close(); moveAct(id, p.acts[i + 1].id, true); } }, icon('right')),
+      h('span', { class: 'spacer' }),
+      h('button', { class: 'btn', type: 'button', onclick: () => { d.close(); addColumn(id); } }, icon('plus'), ` Add a ${lower(p.labels.column)}`),
+      h('button', { class: 'btn btn--primary', type: 'button', onclick: () => d.close() }, 'Done'),
+    ],
+    onClose: () => render(),
+  });
 }
 
 async function addRow() {
@@ -716,6 +901,9 @@ function editColumn(id) {
     title: `${p.labels.column} ${numeral(p, i)}`,
     body: [
       text('Title', 'title', 'Title of this ' + lower(p.labels.column)),
+      actsOn(p) ? h('label', { class: 'field' }, h('span', { class: 'field__label' }, p.labels.act),
+        h('select', { class: 'input', onchange: (e) => change((p) => { c().actId = e.target.value; syncActs(p); }, { render: false }) },
+          p.acts.map((a, ai) => h('option', { value: a.id, selected: a.id === c().actId }, `${p.labels.act} ${roman(ai + 1)}${a.title ? ': ' + a.title : ''}`)))) : null,
       text('One-line teaser', 'teaser', 'Shown on the home page and in link previews'),
       text('Previously…', 'recap', 'A short recap for returning readers', true),
       text('Planning notes', 'notes', 'Goals for this part, the cliffhanger, what must be true by the end', true),
@@ -734,8 +922,8 @@ function editColumn(id) {
           change((p) => { p.columns = p.columns.filter((x) => x.id !== id); p.cards = p.cards.filter((k) => k.colId !== id); });
         }
       } }, icon('trash'), ' Delete'),
-      h('button', { class: 'iconbtn', type: 'button', 'aria-label': 'Move earlier', title: 'Move earlier', disabled: i === 0, onclick: () => { d.close(); change((p) => { const [x] = p.columns.splice(i, 1); p.columns.splice(i - 1, 0, x); }); } }, icon('left')),
-      h('button', { class: 'iconbtn', type: 'button', 'aria-label': 'Move later', title: 'Move later', disabled: i === p.columns.length - 1, onclick: () => { d.close(); change((p) => { const [x] = p.columns.splice(i, 1); p.columns.splice(i + 1, 0, x); }); } }, icon('right')),
+      h('button', { class: 'iconbtn', type: 'button', 'aria-label': 'Move earlier', title: 'Move earlier', disabled: i === 0, onclick: () => { d.close(); stepColumn(id, -1); } }, icon('left')),
+      h('button', { class: 'iconbtn', type: 'button', 'aria-label': 'Move later', title: 'Move later', disabled: i === p.columns.length - 1, onclick: () => { d.close(); stepColumn(id, 1); } }, icon('right')),
       h('span', { class: 'spacer' }),
       h('button', { class: 'btn', type: 'button', onclick: () => { d.close(); exportColumn(id); } }, icon('download'), ' Export for the site'),
       h('button', { class: 'btn btn--primary', type: 'button', onclick: () => d.close() }, 'Done'),
@@ -1259,7 +1447,13 @@ function viewProject(p) {
         h('label', { class: 'field' }, h('span', { class: 'field__label' }, 'Numbering'),
           h('select', { class: 'input', onchange: (e) => upd(() => { p.labels.numerals = e.target.value; }) },
             h('option', { value: 'roman', selected: p.labels.numerals !== 'arabic' }, 'I, II, III'),
-            h('option', { value: 'arabic', selected: p.labels.numerals === 'arabic' }, '1, 2, 3'))))),
+            h('option', { value: 'arabic', selected: p.labels.numerals === 'arabic' }, '1, 2, 3')))),
+      h('div', { class: 'row2 row2--acts' },
+        h('label', { class: 'check check--box' },
+          h('input', { type: 'checkbox', checked: !!p.labels.useActs, onchange: (e) => change((p) => { p.labels.useActs = e.target.checked; syncActs(p); }, { render: false }) }),
+          h('span', {}, h('strong', {}, `Group ${lower(p.labels.column)}s into acts`), h('br'),
+            h('span', { class: 'muted small' }, 'Adds a row of acts above the grid. Turning it off keeps your acts for later.'))),
+        text('Acts are called', () => p.labels.act, (v) => { p.labels.act = v || 'Act'; }, { placeholder: 'Act' }))),
     sec('notebook', 'Notebook', 'A scratchpad for the whole project: themes, the ending you’re aiming for, questions to answer.',
       autosize(h('textarea', { class: 'input notebook', rows: 6, value: p.notes, 'aria-label': 'Notebook', oninput: (e) => upd(() => { p.notes = e.target.value; }) }))),
     sec('types', 'Entry types', 'The kinds of things in this world, and the fields each one has. Changes apply to every entry of that type.', typesWrap),
