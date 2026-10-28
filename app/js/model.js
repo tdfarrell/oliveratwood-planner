@@ -28,9 +28,13 @@ export const FIELD_TYPES = [
 export const STATUSES = [
   ['idea', 'Idea'],
   ['outlined', 'Outlined'],
+  ['drafting', 'In progress (Draft)'],
   ['drafted', 'Drafted'],
+  ['editing', 'In progress (Editing)'],
   ['final', 'Final'],
 ];
+// Short labels for the cards on the grid.
+export const STATUS_SHORT = { idea: 'Idea', outlined: 'Outlined', drafting: 'Drafting', drafted: 'Drafted', editing: 'Editing', final: 'Final' };
 
 export function uid() {
   const a = new Uint8Array(6);
@@ -210,7 +214,7 @@ export function normalize(p) {
   for (const c of p.cards) {
     c.entityIds = c.entityIds || [];
     c.fields = c.fields || {};
-    c.status = c.status || 'idea';
+    c.status = STATUSES.some(([v]) => v === c.status) ? c.status : 'idea';
   }
   for (const e of p.entities) { e.fields = e.fields || {}; e.summary = e.summary || ''; e.notes = e.notes || ''; }
   for (const t of p.types) t.fields = t.fields || [];

@@ -1,5 +1,5 @@
 import { h, append, clear, icon, openDialog, choose, confirmDanger, ask, toast, autosize } from './dom.js';
-import { TEMPLATES, PALETTE, FIELD_TYPES, STATUSES, uid, slugify, numeral, normalize, valueText } from './model.js';
+import { TEMPLATES, PALETTE, FIELD_TYPES, STATUSES, STATUS_SHORT, uid, slugify, numeral, normalize, valueText } from './model.js';
 import { ServerStore, LocalStore, unsaved } from './store.js';
 import { KINDS, FLAVORS, kindForType, generate } from './names.js';
 
@@ -12,7 +12,7 @@ const S = {
   slug: null, project: null, rev: null,
   dirty: false, saving: false, again: false, timer: null,
   status: 'saved', statusMsg: '',
-  highlight: '', compact: false, worldFilter: '',
+  highlight: '', statusFilter: '', compact: false, worldFilter: '',
   drag: null, route: { view: 'home' },
   names: { kind: 'person', style: {}, gender: 'any', flavor: 'soft', start: '' },
 };
@@ -204,7 +204,7 @@ async function openProject(slug) {
     }
   }
   S.slug = slug; S.project = data; S.rev = r.sha; S.dirty = dirty;
-  S.highlight = ''; S.worldFilter = '';
+  S.highlight = ''; S.statusFilter = ''; S.worldFilter = '';
   setStatus(dirty ? 'unsaved' : 'saved');
   if (dirty) S.timer = setTimeout(save, 500);
   return true;
@@ -457,6 +457,14 @@ function viewGrid(p) {
 
   const toolbar = h('div', { class: 'toolbar' },
     p.entities.length ? hl : null,
+    h('div', { class: 'legend', role: 'group', 'aria-label': 'Show only cards with status' },
+      STATUSES.map(([v, l]) => {
+        const n = p.cards.filter((k) => k.status === v).length;
+        return h('button', { class: 'legend__item st-' + v + (S.statusFilter === v ? ' is-on' : ''), type: 'button', 'aria-pressed': String(S.statusFilter === v),
+          title: S.statusFilter === v ? 'Show all cards' : `Highlight ${l} cards`,
+          onclick: () => { S.statusFilter = S.statusFilter === v ? '' : v; render(); } },
+        h('span', { class: 'legend__dot' }), STATUS_SHORT[v], h('span', { class: 'legend__n' }, String(n)));
+      })),
     h('label', { class: 'check' }, h('input', { type: 'checkbox', checked: S.compact, onchange: (e) => { S.compact = e.target.checked; render(); } }), ' Titles only'),
     h('span', { class: 'spacer' }),
     h('button', { class: 'btn btn--sm', type: 'button', onclick: addRow }, icon('plus'), ` ${p.labels.row}`),
@@ -488,7 +496,12 @@ function colHeader(p, c, i) {
     h('span', { class: 'colhead__title' + (c.title ? '' : ' muted') }, c.title || `${p.labels.column} ${numeral(p, i)}`),
     h('span', { class: 'colhead__meta' },
       c.canon ? h('span', { class: 'pill pill--canon' }, icon('lock'), 'Published') : null,
-      h('span', {}, plural(n, 'card')))));
+      h('span', {}, plural(n, 'card'))),
+    n ? h('span', { class: 'statusbar', title: STATUSES.map(([v, l]) => [l, p.cards.filter((k) => k.colId === c.id && k.status === v).length]).filter(([, x]) => x).map(([l, x]) => `${l}: ${x}`).join(' · ') },
+      STATUSES.map(([v]) => {
+        const x = p.cards.filter((k) => k.colId === c.id && k.status === v).length;
+        return x ? h('span', { class: 'statusbar__seg st-' + v, style: { flexGrow: String(x) } }) : null;
+      })) : null));
 }
 
 function rowHeader(p, r) {
@@ -535,12 +548,13 @@ function cell(p, c, r) {
 
 function cardEl(p, k, r) {
   const ents = k.entityIds.map(entity).filter(Boolean);
-  const dim = S.highlight && !k.entityIds.includes(S.highlight);
+  const dim = (S.highlight && !k.entityIds.includes(S.highlight)) || (S.statusFilter && k.status !== S.statusFilter);
+  const hit = !dim && (S.highlight || S.statusFilter);
   const payoffOf = p.cards.find((x) => x.payoffId === k.id);
   const payoff = k.setup && k.payoffId ? p.cards.find((x) => x.id === k.payoffId) : null;
   const st = STATUSES.find(([v]) => v === k.status) || STATUSES[0];
   const el = h('article', {
-    class: `card card--${k.status}` + (dim ? ' is-dim' : '') + (S.highlight && !dim ? ' is-hit' : ''),
+    class: `card st-${k.status}` + (dim ? ' is-dim' : '') + (hit ? ' is-hit' : ''),
     draggable: 'true', tabindex: '0', style: { '--c': r.color }, dataset: { id: k.id },
     onclick: () => editCard(k.id),
     onkeydown: (e) => { if (e.key === 'Enter') editCard(k.id); },
@@ -548,8 +562,8 @@ function cardEl(p, k, r) {
     ondragend: () => { S.drag = null; el.classList.remove('is-dragging'); },
   },
   h('div', { class: 'card__top' },
-    h('span', { class: 'card__status', title: st[1], 'aria-label': st[1] }),
-    h('h3', { class: 'card__title' + (k.title ? '' : ' muted') }, k.title || 'Untitled scene')),
+    h('h3', { class: 'card__title' + (k.title ? '' : ' muted') }, k.title || 'Untitled scene'),
+    h('span', { class: 'card__status', title: st[1] }, STATUS_SHORT[k.status] || st[1])),
   !S.compact && k.summary ? h('p', { class: 'card__sum' }, k.summary) : null,
   (k.setup || payoffOf) ? h('div', { class: 'card__flags' },
     k.setup ? h('span', { class: 'flag' + (payoff ? '' : ' flag--open') }, icon('flag'),
@@ -638,9 +652,9 @@ function editCard(id, isNew = false) {
     h('label', { class: 'field' }, h('span', { class: 'field__label' }, 'Summary'),
       autosize(h('textarea', { class: 'input', rows: 3, value: k().summary, placeholder: 'The beats of the scene', oninput: (e) => upd((c) => { c.summary = e.target.value; }) }))),
     h('div', { class: 'field' }, h('span', { class: 'field__label' }, 'Status'),
-      h('div', { class: 'seg', role: 'radiogroup' }, STATUSES.map(([v, l]) => h('label', { class: 'seg__opt seg__opt--' + v },
+      h('div', { class: 'seg', role: 'radiogroup' }, STATUSES.map(([v, l]) => h('label', { class: 'seg__opt st-' + v },
         h('input', { type: 'radio', name: 'card-status', value: v, checked: k().status === v, onchange: () => upd((c) => { c.status = v; }) }),
-        h('span', {}, l))))),
+        h('span', {}, h('i', { class: 'legend__dot' }), l))))),
     h('div', { class: 'field' }, h('span', { class: 'field__label' }, 'In this scene'),
       p.types.length ? entityPicker(p, () => k().entityIds, (ids) => upd((c) => { c.entityIds = ids; }))
         : h('p', { class: 'muted small' }, 'Add entry types (characters, places…) in the Project tab to link them here.')),
@@ -1178,7 +1192,7 @@ function viewContinuity(p) {
     }
   }
   const unused = p.entities.filter((e) => !appearances(p, e.id).length);
-  const loose = p.cards.filter((k) => p.columns.find((c) => c.id === k.colId)?.canon && (k.status === 'idea' || k.status === 'outlined'));
+  const loose = p.cards.filter((k) => p.columns.find((c) => c.id === k.colId)?.canon && ['idea', 'outlined', 'drafting'].includes(k.status));
 
   const cardBtn = (k) => h('button', { class: 'linkbtn', type: 'button', onclick: () => editCard(k.id) }, cardLabel(p, k));
   const section = (title, blurb, count, content) => h('section', { class: 'cont' },
@@ -1206,7 +1220,7 @@ function viewContinuity(p) {
         h('ul', { class: 'clist' }, g.items.map((l) => h('li', {},
           h('a', { class: 'chip chip--sm', href: phref('e/' + l.e.id), style: { '--c': l.t.color } }, l.e.name || 'Unnamed'),
           h('span', {}, ' ' + l.r.text))))))) : h('p', { class: 'muted small' }, 'Add rules to a magic system (or any entry with a ledger field) and they’ll line up here by part.')),
-    section('Loose ends in published parts', 'Cards in published parts still marked Idea or Outlined.', loose.length,
+    section('Loose ends in published parts', 'Cards in published parts still marked Idea, Outlined or In progress (Draft).', loose.length,
       loose.length ? h('ul', { class: 'clist' }, loose.map((k) => h('li', {}, cardBtn(k)))) : h('p', { class: 'ok' }, icon('check'), ' Nothing loose.')),
     section('Waiting in the wings', 'Entries that aren’t in any scene yet.', unused.length,
       unused.length ? h('div', { class: 'chips' }, unused.map((e) => h('a', { class: 'chip', href: phref('e/' + e.id), style: { '--c': typeOf(e)?.color } }, e.name || 'Unnamed'))) : h('p', { class: 'ok' }, icon('check'), ' Everyone has a scene.')));
