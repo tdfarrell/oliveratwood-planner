@@ -36,7 +36,7 @@ export class ServerStore {
   }
 
   status() { return this.req('status'); }
-  async login(password) { await this.req('login', { method: 'POST', body: { password } }); }
+  async login(username, password) { return this.req('login', { method: 'POST', body: { username, password } }); }
   async logout() { await this.req('logout', { method: 'POST', body: {} }); }
   async list() { return (await this.req('list')).projects; }
   async read(slug) { const r = await this.req('read', { params: { slug } }); return { data: r.data, sha: r.rev }; }
@@ -52,7 +52,7 @@ export class ServerStore {
 
 export class LocalStore {
   constructor() { this.label = 'this browser (demo)'; this.key = 'planner:demo:'; }
-  async status() { return { configured: true, authed: true }; }
+  async status() { return { configured: true, authed: true, user: 'Demo' }; }
   async login() {}
   async logout() {}
   async backups() { return []; }

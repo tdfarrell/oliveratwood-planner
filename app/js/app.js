@@ -5,7 +5,7 @@ import { KINDS, FLAVORS, kindForType, generate } from './names.js';
 
 const DEMO = new URLSearchParams(location.search).has('demo');
 const store = DEMO ? new LocalStore() : new ServerStore();
-const SCOPE = DEMO ? 'demo' : 'server';
+const scope = () => (DEMO ? 'demo' : 'server:' + (S.user || '').toLowerCase());
 const root = document.getElementById('app');
 
 const S = {
@@ -52,7 +52,7 @@ function change(fn, opts = {}) {
   fn(S.project);
   S.project.updated = new Date().toISOString();
   S.dirty = true;
-  unsaved.set(SCOPE, S.slug, { data: S.project, baseRev: S.rev, dirty: true, at: Date.now() });
+  unsaved.set(scope(), S.slug, { data: S.project, baseRev: S.rev, dirty: true, at: Date.now() });
   setStatus('unsaved');
   clearTimeout(S.timer);
   S.timer = setTimeout(save, 1500);
@@ -72,8 +72,8 @@ async function save() {
     const rev = await store.write(slug, snapshot, S.rev);
     if (slug === S.slug) {
       S.rev = rev;
-      if (S.dirty) unsaved.set(SCOPE, slug, { data: S.project, baseRev: rev, dirty: true, at: Date.now() });
-      else { unsaved.clear(SCOPE, slug); setStatus('saved'); }
+      if (S.dirty) unsaved.set(scope(), slug, { data: S.project, baseRev: rev, dirty: true, at: Date.now() });
+      else { unsaved.clear(scope(), slug); setStatus('saved'); }
     }
   } catch (e) {
     S.dirty = true;
@@ -111,7 +111,7 @@ async function conflict() {
     else {
       S.project = normalize(r.data);
       S.dirty = false;
-      unsaved.clear(SCOPE, S.slug);
+      unsaved.clear(scope(), S.slug);
       setStatus('saved');
       render();
     }
@@ -185,7 +185,7 @@ async function openProject(slug) {
   }
   let data = normalize(r.data);
   let dirty = false;
-  const local = unsaved.get(SCOPE, slug);
+  const local = unsaved.get(scope(), slug);
   if (local && local.dirty && local.data) {
     if (local.baseRev === r.sha) {
       data = normalize(local.data); dirty = true;
@@ -200,7 +200,7 @@ async function openProject(slug) {
         ],
       });
       if (keep) { data = normalize(local.data); dirty = true; }
-      else unsaved.clear(SCOPE, slug);
+      else unsaved.clear(scope(), slug);
     }
   }
   S.slug = slug; S.project = data; S.rev = r.sha; S.dirty = dirty;
@@ -222,6 +222,7 @@ async function boot() {
       return renderMessage('Almost there',
         'The planner’s password hasn’t been set yet. In GitHub, open the oliveratwood-planner repository → Settings → Secrets and variables → Actions, add a secret called PLANNER_PASSWORD, then run the “Publish planner” workflow again.');
     }
+    S.user = st.user || '';
     if (!st.authed) return renderLogin();
     route();
   } catch (e) {
@@ -245,6 +246,9 @@ function renderMessage(title, msg) {
 }
 
 function renderLogin(expired = false) {
+  let remembered = '';
+  try { remembered = localStorage.getItem('planner:user') || ''; } catch { /* blocked */ }
+  const user = h('input', { class: 'input', type: 'text', autocomplete: 'username', autocapitalize: 'none', spellcheck: 'false', id: 'user', required: true, value: S.user || remembered });
   const input = h('input', { class: 'input', type: 'password', autocomplete: 'current-password', id: 'pw', required: true });
   const err = h('p', { class: 'form-error', role: 'alert' });
   const btn = h('button', { class: 'btn btn--primary btn--block', type: 'submit' }, 'Open the planner');
@@ -254,7 +258,9 @@ function renderLogin(expired = false) {
       e.preventDefault();
       btn.disabled = true; err.textContent = '';
       try {
-        await store.login(input.value);
+        const r = await store.login(user.value.trim(), input.value);
+        S.user = (r && r.user) || user.value.trim();
+        try { localStorage.setItem('planner:user', user.value.trim()); } catch { /* blocked */ }
         if (S.project) { render(); save(); } else route();
       } catch (ex) {
         err.textContent = ex.message; btn.disabled = false; input.select();
@@ -266,10 +272,11 @@ function renderLogin(expired = false) {
   h('p', { class: 'muted' }, expired
     ? 'Your sign-in ran out. Sign in again and your changes will save. Nothing was lost.'
     : 'Outlines, worlds, characters and magic for Oliver Atwood’s stories.'),
+  h('label', { class: 'field', for: 'user' }, h('span', { class: 'field__label' }, 'Name'), user),
   h('label', { class: 'field', for: 'pw' }, h('span', { class: 'field__label' }, 'Password'), input),
   err, btn);
   clear(root).append(h('main', { class: 'center' }, form));
-  input.focus();
+  (user.value ? input : user).focus();
 }
 
 async function renderHome() {
@@ -294,7 +301,8 @@ async function renderHome() {
   const page = h('div', { class: 'page' },
     h('header', { class: 'top top--home' }, brand(), h('span', { class: 'spacer' }),
       DEMO ? h('span', { class: 'pill' }, 'Demo: saves in this browser only') : null,
-      DEMO ? null : h('button', { class: 'btn btn--ghost btn--sm', type: 'button', onclick: async () => { await store.logout(); renderLogin(); } }, icon('out'), ' Sign out')),
+      S.user && !DEMO ? h('span', { class: 'muted small' }, S.user) : null,
+      DEMO ? null : h('button', { class: 'btn btn--ghost btn--sm', type: 'button', onclick: async () => { await store.logout(); S.project = null; S.slug = null; renderLogin(); } }, icon('out'), ' Sign out')),
     h('main', { class: 'wrap home' },
       h('h1', { class: 'display display--xl' }, 'Your projects'),
       projects.length ? null : h('p', { class: 'muted lede' }, 'Start a project for each story. Every one gets its own grid, world and continuity notes.'),
@@ -1467,7 +1475,7 @@ function viewProject(p) {
     sec('danger', 'Delete', null,
       h('button', { class: 'btn btn--danger', type: 'button', onclick: async () => {
         if (!(await confirmDanger(`Delete “${p.title}”?`, 'It disappears from your projects. You can bring it back from “Restore a deleted project” on the home screen.'))) return;
-        try { await saveNow(); await store.remove(S.slug); unsaved.clear(SCOPE, S.slug); S.project = null; S.slug = null; go(''); }
+        try { await saveNow(); await store.remove(S.slug); unsaved.clear(scope(), S.slug); S.project = null; S.slug = null; go(''); }
         catch (e) { toast(e.message); }
       } }, icon('trash'), ' Delete project')));
 

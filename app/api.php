@@ -33,11 +33,26 @@ function out($body, int $code = 200): void {
 }
 function fail(string $msg, int $code, string $kind = 'error'): void { out(['error' => $msg, 'kind' => $kind], $code); }
 
-function password_hash_config(): ?string {
+// Users from config.php: [ 'users' => [ 'name' => ['hash' => …, 'label' => …, 'owner' => bool] ] ].
+// The owner's projects stay in data/ (where they always were); everyone else
+// gets their own folder at data/u/<name>/.
+function users_config(): array {
     $file = __DIR__ . '/config.php';
-    if (!is_file($file)) return null;
+    if (!is_file($file)) return [];
     $cfg = include $file;
-    return is_array($cfg) && !empty($cfg['password_hash']) ? $cfg['password_hash'] : null;
+    if (!is_array($cfg)) return [];
+    if (!empty($cfg['users']) && is_array($cfg['users'])) {
+        $out = [];
+        foreach ($cfg['users'] as $name => $u) {
+            if (!empty($u['hash'])) $out[strtolower((string)$name)] = $u + ['label' => $name, 'owner' => false];
+        }
+        return $out;
+    }
+    if (!empty($cfg['password_hash'])) return ['oliver' => ['hash' => $cfg['password_hash'], 'label' => 'Oliver', 'owner' => true]];
+    return [];
+}
+function user_dir(string $DATA, string $name, array $u): string {
+    return !empty($u['owner']) ? $DATA : "$DATA/u/$name";
 }
 
 function ensure_dirs(string $DATA): void {
@@ -78,11 +93,12 @@ function secret(string $DATA): string {
 function sign(string $DATA, string $hash, string $payload): string {
     return hash_hmac('sha256', $payload, secret($DATA) . '|' . $hash);
 }
-function authed(string $DATA, string $hash): bool {
+// Returns the signed-in user's name, or null.
+function authed(string $DATA, array $users): ?string {
     $c = $_COOKIE[COOKIE] ?? '';
-    if (!preg_match('/^(\d{10})\.([a-f0-9]{64})$/', $c, $m)) return false;
-    if ((int)$m[1] < time()) return false;
-    return hash_equals(sign($DATA, $hash, $m[1]), $m[2]);
+    if (!preg_match('/^(\d{10})\.([a-z0-9_-]{1,40})\.([a-f0-9]{64})$/', $c, $m)) return null;
+    if ((int)$m[1] < time() || empty($users[$m[2]])) return null;
+    return hash_equals(sign($DATA, $users[$m[2]]['hash'], $m[1] . '|' . $m[2]), $m[3]) ? $m[2] : null;
 }
 function set_cookie(string $value, int $expires): void {
     $path = rtrim(dirname($_SERVER['SCRIPT_NAME'] ?? '/'), '/') . '/';
@@ -133,6 +149,16 @@ function backup(string $DATA, string $slug, string $json): void {
     }
 }
 
+function series_counts(array $d): array {
+    if (($d['kind'] ?? '') === 'series') {
+        $books = $d['books'] ?? [];
+        $cards = 0;
+        foreach ($books as $b) $cards += count($b['cards'] ?? []);
+        return ['books' => count($books), 'cards' => $cards, 'entities' => count($d['entities'] ?? []), 'columns' => 0];
+    }
+    return ['cards' => count($d['cards'] ?? []), 'entities' => count($d['entities'] ?? []), 'columns' => count($d['columns'] ?? [])];
+}
+
 function body_json(): array {
     $raw = file_get_contents('php://input', false, null, 0, MAX_BYTES + 1);
     if ($raw === false || strlen($raw) > MAX_BYTES) fail('That project is too large to save (8 MB limit).', 413);
@@ -143,35 +169,47 @@ function body_json(): array {
 
 // ---------- Routing ----------
 
-$hash = password_hash_config();
+$users = users_config();
 $action = $_GET['action'] ?? '';
 $method = $_SERVER['REQUEST_METHOD'] ?? 'GET';
 
 if ($method !== 'GET' && ($_SERVER['HTTP_X_PLANNER'] ?? '') !== '1') fail('Bad request.', 400);
 
 if ($action === 'status') {
-    out(['configured' => $hash !== null, 'authed' => $hash !== null && is_dir($DATA) && authed($DATA, $hash)]);
+    $who = $users && is_dir($DATA) ? authed($DATA, $users) : null;
+    out(['configured' => (bool)$users, 'authed' => (bool)$who, 'user' => $who ? $users[$who]['label'] : null]);
 }
 
-if ($hash === null) fail('The planner password hasn’t been set yet. Add the PLANNER_PASSWORD secret in GitHub and run the deploy again.', 503, 'unconfigured');
+if (!$users) fail('The planner password hasn’t been set yet. Add the PLANNER_PASSWORD secret in GitHub and run the deploy again.', 503, 'unconfigured');
 ensure_dirs($DATA);
 
 if ($action === 'login' && $method === 'POST') {
     throttle($DATA);
     $b = body_json();
-    if (!password_verify((string)($b['password'] ?? ''), $hash)) {
+    $name = strtolower(trim((string)($b['username'] ?? '')));
+    $pass = (string)($b['password'] ?? '');
+    // With only one user, the name can be left blank.
+    if ($name === '' && count($users) === 1) $name = array_key_first($users);
+    $u = $users[$name] ?? null;
+    if (!$u || !password_verify($pass, $u['hash'])) {
         throttle($DATA, true);
         usleep(400000);
-        fail('That password isn’t right.', 401, 'auth');
+        fail('That name and password don’t match.', 401, 'auth');
     }
     $exp = time() + SESSION_DAYS * 86400;
-    set_cookie($exp . '.' . sign($DATA, $hash, (string)$exp), $exp);
-    out(['ok' => true]);
+    set_cookie($exp . '.' . $name . '.' . sign($DATA, $u['hash'], $exp . '|' . $name), $exp);
+    out(['ok' => true, 'user' => $u['label']]);
 }
 
 if ($action === 'logout' && $method === 'POST') { set_cookie('', time() - 3600); out(['ok' => true]); }
 
-if (!authed($DATA, $hash)) fail('Please sign in.', 401, 'auth');
+$who = authed($DATA, $users);
+if (!$who) fail('Please sign in.', 401, 'auth');
+// From here on, $DATA is the signed-in user's own folder.
+$DATA = user_dir($DATA, $who, $users[$who]);
+foreach ([$DATA, "$DATA/projects", "$DATA/backups"] as $d) {
+    if (!is_dir($d) && !@mkdir($d, 0750, true)) fail('The planner can’t create your data folder on the server.', 500);
+}
 
 switch ($action) {
     case 'list':
@@ -184,7 +222,8 @@ switch ($action) {
                 'slug' => basename($f, '.php'), 'rev' => rev_of($json),
                 'title' => $d['title'] ?? basename($f, '.php'), 'synopsis' => $d['synopsis'] ?? '',
                 'updated' => gmdate('c', filemtime($f)),
-                'counts' => ['cards' => count($d['cards'] ?? []), 'entities' => count($d['entities'] ?? []), 'columns' => count($d['columns'] ?? [])],
+                'kind' => ($d['kind'] ?? 'project') === 'series' ? 'series' : 'project',
+                'counts' => series_counts($d),
             ];
         }
         usort($items, fn($a, $b) => strcmp($b['updated'], $a['updated']));

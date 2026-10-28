@@ -2,9 +2,14 @@
 #
 # Needs four repository secrets (Settings → Secrets and variables → Actions):
 #   FTP_SERVER, FTP_USERNAME, FTP_PASSWORD   same values as the main oliveratwood repo
-#   PLANNER_PASSWORD                         the password for signing in to the planner
+#   PLANNER_PASSWORD                         your planner password
 # Optional:
-#   FTP_SERVER_DIR   same as the main repo, if you set one there (must end in /)
+#   PLANNER_USERNAME          your sign-in name (default: Oliver)
+#   PLANNER_PASSWORD_TBURLEE  TBurlee's password; TBurlee has their own separate projects
+#   FTP_SERVER_DIR            same as the main repo, if you set one there (must end in /)
+#
+# To add another person: add a line for them under "Write the password file" below,
+# and a PLANNER_PASSWORD_<NAME> secret.
 #
 # Your projects are saved on the server in planner/data/ by api.php. They are never
 # in this repository, and this upload never touches them.
@@ -29,6 +34,8 @@ jobs:
       FTP_USERNAME: ${{ secrets.FTP_USERNAME }}
       FTP_PASSWORD: ${{ secrets.FTP_PASSWORD }}
       PLANNER_PASSWORD: ${{ secrets.PLANNER_PASSWORD }}
+      PLANNER_USERNAME: ${{ secrets.PLANNER_USERNAME }}
+      PLANNER_PASSWORD_TBURLEE: ${{ secrets.PLANNER_PASSWORD_TBURLEE }}
     steps:
       - uses: actions/checkout@v7
 
@@ -46,7 +53,22 @@ jobs:
 
       - name: Write the password file
         run: |
-          php -r '$h = password_hash(getenv("PLANNER_PASSWORD"), PASSWORD_DEFAULT); file_put_contents("app/config.php", "<?php\nreturn [\"password_hash\" => " . var_export($h, true) . "];\n");'
+          cat > /tmp/users.php <<'PHP'
+          <?php
+          $users = [];
+          $add = function (string $name, string $env, bool $owner) use (&$users) {
+              $pw = getenv($env);
+              if ($pw === false || $pw === '') return;
+              $key = strtolower(preg_replace('/[^A-Za-z0-9_-]/', '', $name));
+              $users[$key] = ['hash' => password_hash($pw, PASSWORD_DEFAULT), 'label' => $name, 'owner' => $owner];
+          };
+          $add(getenv('PLANNER_USERNAME') ?: 'Oliver', 'PLANNER_PASSWORD', true);
+          $add('TBurlee', 'PLANNER_PASSWORD_TBURLEE', false);
+          file_put_contents('app/config.php', "<?php\nreturn " . var_export(['users' => $users], true) . ";\n");
+          echo 'Users: ' . implode(', ', array_map(fn($u) => $u['label'], $users)) . "\n";
+          PHP
+          sed -i 's/^          //' /tmp/users.php
+          php /tmp/users.php
           php -l app/config.php
           php -l app/api.php
 
