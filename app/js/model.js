@@ -218,6 +218,8 @@ export function normalize(p) {
     c.entityIds = c.entityIds || [];
     c.fields = c.fields || {};
     c.status = STATUSES.some(([v]) => v === c.status) ? c.status : 'idea';
+    c.links = Array.isArray(c.links) ? c.links : [];
+    c.when = c.when && Number.isInteger(c.when.y) ? c.when : null;
   }
   for (const e of p.entities) { e.fields = e.fields || {}; e.summary = e.summary || ''; e.notes = e.notes || ''; }
   for (const t of p.types) t.fields = t.fields || [];
@@ -252,4 +254,159 @@ export function syncActs(p) {
   const order = new Map(p.acts.map((a, i) => [a.id, i]));
   p.columns = p.columns.map((c, i) => [c, i]).sort((x, y) => order.get(x[0].actId) - order.get(y[0].actId) || x[1] - y[1]).map(([c]) => c);
   return p;
+}
+
+// ======================================================================
+// Series: several books sharing one world
+// ======================================================================
+//
+// A series is one file: { kind: 'series', title, calendar, groups, books,
+// types, entities, nameBank, notes }. Each book has the same shape as a
+// project's grid (columns, rows, cards, acts, labels…) but no world of its
+// own: its types/entities/nameBank are read from and written to the series
+// through non-enumerable accessors, so the rest of the app can treat a book
+// exactly like a project, and saving the series never duplicates the world.
+
+export const LINE_COLORS = ['#B04A1A', '#2F6F7E', '#6A4C93', '#3E7D4F', '#8A6A1F', '#4B6584', '#A8344E', '#00838A'];
+
+export const LINK_KINDS = [
+  ['same', 'Same scene, other POV'],
+  ['simul', 'Happens at the same time'],
+  ['retold', 'Retold or remembered'],
+];
+
+const WORLD_KEYS = ['types', 'entities', 'nameBank'];
+const BOOK_KEYS = ['title', 'synopsis', 'storySlug', 'labels', 'columns', 'rows', 'cards', 'cardFields', 'acts', 'notes', 'created'];
+
+export function newSeries(title) {
+  return {
+    kind: 'series', schema: SCHEMA, title, synopsis: '', created: new Date().toISOString(),
+    calendar: { years: ['Year 1', 'Year 2', 'Year 3'], parts: ['Spring', 'Summer', 'Autumn', 'Winter'] },
+    groups: [{ id: uid(), title: 'Main series', color: LINE_COLORS[0] }],
+    books: [], types: worldTypes(), entities: [], nameBank: [], notes: '',
+  };
+}
+
+function attachBook(series, book) {
+  for (const k of WORLD_KEYS) {
+    Object.defineProperty(book, k, { get: () => series[k], set: (v) => { series[k] = v; }, enumerable: false, configurable: true });
+  }
+  return book;
+}
+
+// A blank book, laid out like the chosen template.
+export function newBook(series, title, template, groupId) {
+  const p = (TEMPLATES[template] || TEMPLATES.serial).make(title);
+  const book = { id: uid(), groupId };
+  for (const k of BOOK_KEYS) book[k] = p[k];
+  attachBook(series, book);
+  normalize(book);
+  series.books.push(book);
+  return book;
+}
+
+// Moves a standalone project into a series: its entry types are matched to
+// the series' by name, its entries are added (duplicates can be merged later),
+// and its grid becomes a book.
+export function importProject(series, project, groupId) {
+  const typeMap = {}, fieldMap = {};
+  for (const t of project.types || []) {
+    let st = series.types.find((x) => x.name.trim().toLowerCase() === (t.name || '').trim().toLowerCase());
+    if (!st) { st = { ...t, fields: [] }; series.types.push(st); }
+    typeMap[t.id] = st.id;
+    for (const fl of t.fields || []) {
+      let sf = st.fields.find((x) => x.name.trim().toLowerCase() === (fl.name || '').trim().toLowerCase() && x.type === fl.type);
+      if (!sf) { sf = { ...fl }; st.fields.push(sf); }
+      fieldMap[fl.id] = sf.id;
+    }
+  }
+  for (const st of series.types) for (const fl of st.fields) if (fl.linkType && typeMap[fl.linkType]) fl.linkType = typeMap[fl.linkType];
+  for (const e of project.entities || []) {
+    const fields = {};
+    for (const [k, v] of Object.entries(e.fields || {})) fields[fieldMap[k] || k] = v;
+    series.entities.push({ ...e, typeId: typeMap[e.typeId] || e.typeId, fields });
+  }
+  for (const n of project.nameBank || []) if (!series.nameBank.some((x) => x.name === n.name)) series.nameBank.push(n);
+  const book = { id: uid(), groupId };
+  for (const k of BOOK_KEYS) if (project[k] !== undefined) book[k] = project[k];
+  attachBook(series, book);
+  normalize(book);
+  series.books.push(book);
+  return book;
+}
+
+// Entries of the same type with the same name.
+export function findDuplicates(series) {
+  const groups = new Map();
+  for (const e of series.entities) {
+    const name = (e.name || '').trim().toLowerCase();
+    if (!name) continue;
+    const key = e.typeId + '|' + name;
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(e);
+  }
+  return [...groups.values()].filter((g) => g.length > 1);
+}
+
+const isEmpty = (v) => v == null || v === '' || (Array.isArray(v) && !v.length);
+
+// Folds entry `dropId` into `keepId` everywhere in the series.
+export function mergeEntities(series, keepId, dropId) {
+  const keep = series.entities.find((e) => e.id === keepId);
+  const drop = series.entities.find((e) => e.id === dropId);
+  if (!keep || !drop || keep === drop) return;
+  for (const [k, v] of Object.entries(drop.fields || {})) {
+    const cur = keep.fields[k];
+    if (isEmpty(cur)) keep.fields[k] = v;
+    else if (Array.isArray(cur) && Array.isArray(v)) {
+      if (v.length && typeof v[0] === 'object') keep.fields[k] = cur.concat(v.filter((x) => !cur.some((c) => c.id === x.id)));
+      else keep.fields[k] = [...new Set(cur.concat(v))];
+    } else if (typeof cur === 'string' && typeof v === 'string' && v.trim() && !cur.includes(v.trim())) {
+      keep.fields[k] = cur + '\n\n' + v;
+    }
+  }
+  if (!keep.summary && drop.summary) keep.summary = drop.summary;
+  if (drop.notes && drop.notes.trim()) keep.notes = keep.notes ? keep.notes + '\n\n' + drop.notes : drop.notes;
+  const swap = (arr) => [...new Set(arr.map((x) => (x === dropId ? keepId : x)))].filter((x) => x !== undefined);
+  for (const b of series.books) {
+    for (const c of b.cards) {
+      c.entityIds = swap(c.entityIds);
+      for (const [k, v] of Object.entries(c.fields || {})) if (Array.isArray(v) && v.includes(dropId)) c.fields[k] = swap(v);
+    }
+  }
+  for (const e of series.entities) {
+    for (const [k, v] of Object.entries(e.fields || {})) if (Array.isArray(v) && v.includes(dropId)) e.fields[k] = swap(v).filter((x) => x !== e.id);
+  }
+  series.entities = series.entities.filter((e) => e.id !== dropId);
+}
+
+// Readies a file loaded from storage, project or series.
+export function prepare(data) {
+  if (!data || data.kind !== 'series') return normalize(data);
+  const s = data;
+  s.schema = s.schema || SCHEMA;
+  s.title = s.title || 'Untitled series';
+  s.synopsis = s.synopsis || '';
+  s.notes = s.notes || '';
+  s.calendar = s.calendar || {};
+  s.calendar.years = Array.isArray(s.calendar.years) && s.calendar.years.length ? s.calendar.years : ['Year 1'];
+  s.calendar.parts = Array.isArray(s.calendar.parts) && s.calendar.parts.length ? s.calendar.parts : ['—'];
+  s.groups = Array.isArray(s.groups) && s.groups.length ? s.groups : [{ id: uid(), title: 'Main series', color: LINE_COLORS[0] }];
+  for (const k of ['books', 'types', 'entities', 'nameBank']) s[k] = Array.isArray(s[k]) ? s[k] : [];
+  for (const t of s.types) t.fields = t.fields || [];
+  for (const e of s.entities) { e.fields = e.fields || {}; e.summary = e.summary || ''; e.notes = e.notes || ''; }
+  for (const b of s.books) {
+    if (!s.groups.some((g) => g.id === b.groupId)) b.groupId = s.groups[0].id;
+    attachBook(s, b);
+    normalize(b);
+  }
+  // Read-only views across every book, for series-wide screens.
+  const flat = (k) => ({ get: () => s.books.flatMap((b) => b[k]), set: () => {}, enumerable: false, configurable: true });
+  Object.defineProperty(s, 'cards', flat('cards'));
+  Object.defineProperty(s, 'columns', flat('columns'));
+  Object.defineProperty(s, 'rows', flat('rows'));
+  Object.defineProperty(s, 'cardFields', { get: () => [], set: () => {}, enumerable: false, configurable: true });
+  Object.defineProperty(s, 'acts', { get: () => [], set: () => {}, enumerable: false, configurable: true });
+  Object.defineProperty(s, 'labels', { get: () => ({ column: 'Part', row: 'Thread', numerals: 'roman', act: 'Act', useActs: false }), set: () => {}, enumerable: false, configurable: true });
+  return s;
 }

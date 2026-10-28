@@ -1,5 +1,6 @@
 import { h, append, clear, icon, openDialog, choose, confirmDanger, ask, toast, autosize } from './dom.js';
-import { TEMPLATES, PALETTE, FIELD_TYPES, STATUSES, STATUS_SHORT, uid, slugify, numeral, roman, normalize, valueText, actsOn, syncActs } from './model.js';
+import { TEMPLATES, PALETTE, FIELD_TYPES, STATUSES, STATUS_SHORT, uid, slugify, numeral, roman, normalize, valueText, actsOn, syncActs,
+  prepare, newSeries, newBook, importProject, findDuplicates, mergeEntities, LINE_COLORS, LINK_KINDS } from './model.js';
 import { ServerStore, LocalStore, unsaved } from './store.js';
 import { KINDS, FLAVORS, kindForType, generate } from './names.js';
 
@@ -13,7 +14,8 @@ const S = {
   dirty: false, saving: false, again: false, timer: null,
   status: 'saved', statusMsg: '',
   highlight: '', statusFilter: '', compact: false, worldFilter: '',
-  drag: null, dragItem: null, route: { view: 'home' },
+  drag: null, dragItem: null, route: { view: 'home' }, bookId: null,
+  tl: { order: 'world', trace: null, hide: {} },
   names: { kind: 'person', style: {}, gender: 'any', flavor: 'soft', start: '' },
 };
 
@@ -21,7 +23,25 @@ const S = {
 // Small lookups
 // ======================================================================
 
-const P = () => S.project;
+const isSeries = () => !!(S.project && S.project.kind === 'series');
+// The thing the current screen edits: a project, a book of a series, or the
+// series itself (series-wide screens see every book's cards through read-only views).
+const P = () => {
+  const d = S.project;
+  if (d && d.kind === 'series' && S.bookId) return d.books.find((b) => b.id === S.bookId) || d;
+  return d;
+};
+const inSeriesTop = () => isSeries() && !S.bookId;
+// Every card the current screen can link to: the whole series, or one project.
+const scopeCards = () => (isSeries() ? S.project.books.flatMap((b) => b.cards) : (S.project ? S.project.cards : []));
+const findCard = (id) => (id ? scopeCards().find((k) => k.id === id) : null);
+const bookOf = (k) => (isSeries() ? S.project.books.find((b) => b.cards.includes(k)) : S.project);
+function cardInfo(k) {
+  const b = bookOf(k) || P();
+  const i = b.columns.findIndex((c) => c.id === k.colId);
+  return { b, i, num: i >= 0 ? numeral(b, i) : '?', row: b.rows.find((r) => r.id === k.rowId) };
+}
+const otherBook = (b) => isSeries() && b !== P();
 const entity = (id) => P().entities.find((e) => e.id === id);
 const typeOf = (e) => e && P().types.find((t) => t.id === e.typeId);
 const colIndex = (id) => P().columns.findIndex((c) => c.id === id);
@@ -30,12 +50,29 @@ const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
 const colName = (p, c) => `${p.labels.column} ${numeral(p, colIndex(c.id))}`;
 
 function cardLabel(p, k) {
-  const i = colIndex(k.colId);
-  return `${i >= 0 ? numeral(p, i) : '?'} · ${k.title || 'Untitled scene'}`;
+  const { b, num } = cardInfo(k);
+  return `${otherBook(b) ? b.title + ' · ' : ''}${num} · ${k.title || 'Untitled scene'}`;
 }
+// Scenes an entry is in: across the whole series when there is one.
 function appearances(p, id) {
-  return p.cards.filter((k) => k.entityIds.includes(id))
-    .sort((a, b) => colIndex(a.colId) - colIndex(b.colId));
+  const order = (k) => { const { b, i } = cardInfo(k); return (isSeries() ? S.project.books.indexOf(b) : 0) * 10000 + i; };
+  return scopeCards().filter((k) => k.entityIds.includes(id)).sort((a, b) => order(a) - order(b));
+}
+
+// Opens a card's editor from anywhere, switching to its book for the dialog.
+let cardCtx = 0;
+function openCard(id) {
+  if (isSeries()) {
+    const b = S.project.books.find((x) => x.cards.some((k) => k.id === id));
+    if (!b) return;
+    if (S.bookId !== b.id) {
+      const my = ++cardCtx;
+      S.bookId = b.id;
+      editCard(id, false, () => { if (my === cardCtx) { S.bookId = S.route.book || null; render(); } });
+      return;
+    }
+  }
+  editCard(id);
 }
 function fmtTime(iso) {
   if (!iso) return '';
@@ -49,7 +86,7 @@ function fmtTime(iso) {
 
 function change(fn, opts = {}) {
   if (!S.project) return;
-  fn(S.project);
+  fn(P());
   S.project.updated = new Date().toISOString();
   S.dirty = true;
   unsaved.set(scope(), S.slug, { data: S.project, baseRev: S.rev, dirty: true, at: Date.now() });
@@ -109,7 +146,7 @@ async function conflict() {
     S.rev = r.sha;
     if (keep) { S.dirty = true; save(); }
     else {
-      S.project = normalize(r.data);
+      S.project = prepare(r.data);
       S.dirty = false;
       unsaved.clear(scope(), S.slug);
       setStatus('saved');
@@ -147,12 +184,23 @@ document.addEventListener('visibilitychange', () => { if (document.visibilitySta
 
 function parseRoute() {
   const parts = location.hash.slice(1).split('#')[0].replace(/^\/?/, '').split('/').filter(Boolean).map(decodeURIComponent);
-  if (parts[0] !== 'p' || !parts[1]) return { view: 'home' };
-  return { view: 'project', slug: parts[1], tab: parts[2] || 'grid', id: parts[3] || null };
+  if (parts[0] === 'p' && parts[1]) return { view: 'project', kind: 'p', slug: parts[1], book: null, tab: parts[2] || 'grid', id: parts[3] || null };
+  if (parts[0] === 's' && parts[1]) {
+    if (parts[2] === 'b' && parts[3]) return { view: 'project', kind: 's', slug: parts[1], book: parts[3], tab: parts[4] || 'grid', id: parts[5] || null };
+    return { view: 'project', kind: 's', slug: parts[1], book: null, tab: parts[2] || 'timeline', id: parts[3] || null };
+  }
+  return { view: 'home' };
 }
 const go = (path) => { location.hash = '#/' + path; };
 const href = (path) => '#/' + path;
-const phref = (tail = '') => href(`p/${encodeURIComponent(S.slug)}${tail ? '/' + tail : ''}`);
+// Path of the current project, book or series, plus an optional tail.
+function pbase(tail = '') {
+  const slug = encodeURIComponent(S.slug);
+  const base = isSeries() ? `s/${slug}${S.bookId ? '/b/' + encodeURIComponent(S.bookId) : ''}` : `p/${slug}`;
+  return base + (tail ? '/' + tail : '');
+}
+const phref = (tail = '') => href(pbase(tail));
+const shref = (tail = '') => href(`s/${encodeURIComponent(S.slug)}${tail ? '/' + tail : ''}`);
 
 window.addEventListener('hashchange', route);
 
@@ -169,6 +217,11 @@ async function route() {
     const ok = await openProject(S.route.slug);
     if (!ok) return;
   }
+  // Fix up links that point at the wrong kind of thing.
+  if (isSeries() && S.route.kind === 'p') return go(`s/${S.slug}`);
+  if (!isSeries() && S.route.kind === 's') return go(`p/${S.slug}`);
+  S.bookId = S.route.book || null;
+  if (S.bookId && !S.project.books.some((b) => b.id === S.bookId)) { toast('That book isn’t in this series any more.'); return go(`s/${S.slug}/books`); }
   render();
   window.scrollTo(0, 0);
 }
@@ -183,12 +236,12 @@ async function openProject(slug) {
     go('');
     return false;
   }
-  let data = normalize(r.data);
+  let data = prepare(r.data);
   let dirty = false;
   const local = unsaved.get(scope(), slug);
   if (local && local.dirty && local.data) {
     if (local.baseRev === r.sha) {
-      data = normalize(local.data); dirty = true;
+      data = prepare(local.data); dirty = true;
       toast('Restored changes that hadn’t reached the server yet.');
     } else {
       const keep = await choose({
@@ -199,12 +252,13 @@ async function openProject(slug) {
           { label: 'Use this device’s version', value: true, kind: 'primary' },
         ],
       });
-      if (keep) { data = normalize(local.data); dirty = true; }
+      if (keep) { data = prepare(local.data); dirty = true; }
       else unsaved.clear(scope(), slug);
     }
   }
   S.slug = slug; S.project = data; S.rev = r.sha; S.dirty = dirty;
   S.highlight = ''; S.statusFilter = ''; S.worldFilter = '';
+  S.tl = { order: 'world', trace: null, hide: {} };
   setStatus(dirty ? 'unsaved' : 'saved');
   if (dirty) S.timer = setTimeout(save, 500);
   return true;
@@ -286,6 +340,23 @@ async function renderHome() {
   try { projects = await store.list(); }
   catch (e) { if (e.kind === 'auth') return renderLogin(); return renderMessage('Can’t load projects', e.message); }
 
+  const seriesList = projects.filter((x) => x.kind === 'series');
+  projects = projects.filter((x) => x.kind !== 'series');
+  const seriesBox = h('section', { class: 'home__series' },
+    h('div', { class: 'home__sechead' },
+      h('h2', { class: 'display' }, 'Your series'),
+      h('span', { class: 'spacer' }),
+      h('button', { class: 'btn', type: 'button', onclick: newSeriesDialog }, icon('plus'), ' New series')),
+    seriesList.length
+      ? h('div', { class: 'scards' }, seriesList.map((x) => h('a', { class: 'scard', href: href('s/' + encodeURIComponent(x.slug)) },
+        h('span', { class: 'scard__icon' }, icon('layers')),
+        h('span', { class: 'scard__text' },
+          h('span', { class: 'scard__title' }, x.title),
+          x.synopsis ? h('span', { class: 'scard__syn' }, x.synopsis) : null,
+          h('span', { class: 'scard__meta' }, `${plural(x.counts.books || 0, 'book')} · ${plural(x.counts.cards, 'scene')} · ${plural(x.counts.entities, 'entry')}`.replace('entrys', 'entries'))),
+        h('span', { class: 'scard__go' }, 'Open timeline', icon('right')))))
+      : h('p', { class: 'muted' }, 'A series holds several books that share one world, with a timeline across all of them. Your projects below can be moved into one.'));
+
   const shelf = h('div', { class: 'shelf' },
     projects.map((pr, i) => h('a', { class: 'book', href: href('p/' + encodeURIComponent(pr.slug)), style: { '--c': PALETTE[i % PALETTE.length] } },
       h('span', { class: 'book__band' }),
@@ -304,7 +375,8 @@ async function renderHome() {
       S.user && !DEMO ? h('span', { class: 'muted small' }, S.user) : null,
       DEMO ? null : h('button', { class: 'btn btn--ghost btn--sm', type: 'button', onclick: async () => { await store.logout(); S.project = null; S.slug = null; renderLogin(); } }, icon('out'), ' Sign out')),
     h('main', { class: 'wrap home' },
-      h('h1', { class: 'display display--xl' }, 'Your projects'),
+      seriesBox,
+      h('h1', { class: 'display display--xl home__projects' }, seriesList.length ? 'Standalone projects' : 'Your projects'),
       projects.length ? null : h('p', { class: 'muted lede' }, 'Start a project for each story. Every one gets its own grid, world and continuity notes.'),
       shelf, restore));
   clear(root).append(page);
@@ -355,7 +427,7 @@ function restoreDeletedDialog(list) {
         try {
           const data = await store.backup(x.slug, x.backup);
           await store.write(x.slug, data, null);
-          d.close(); go('p/' + x.slug);
+          d.close(); go((data.kind === 'series' ? 's/' : 'p/') + x.slug);
         } catch (e) { toast(e.message); }
       } }, 'Restore')))),
   });
@@ -368,29 +440,55 @@ function restoreDeletedDialog(list) {
 function render() {
   const p = P();
   if (!p) return renderHome();
-  document.title = `${p.title} · Planner`;
   const tab = S.route.tab;
-  const tabs = [
-    ['grid', 'Grid', 'grid'],
-    ['world', 'World', 'globe'],
-    ['continuity', 'Continuity', 'link'],
-    ['project', 'Project', 'gear'],
-  ];
-  const activeTab = tab === 'e' ? 'world' : tab;
+  const series = isSeries() ? S.project : null;
+  let tabs, activeTab, main, crumbs;
 
-  let main;
-  if (tab === 'world') main = viewWorld(p, S.route.id);
-  else if (tab === 'e') main = viewEntity(p, S.route.id);
-  else if (tab === 'continuity') main = viewContinuity(p);
-  else if (tab === 'project') main = viewProject(p);
-  else main = viewGrid(p);
+  if (series && !S.bookId) {
+    // Series-wide screens
+    document.title = `${series.title} · Planner`;
+    tabs = [
+      ['timeline', 'Timeline', 'timeline', shref()],
+      ['books', 'Books', 'book', shref('books')],
+      ['world', 'Shared world', 'globe', shref('world')],
+      ['continuity', 'Continuity', 'link', shref('continuity')],
+      ['settings', 'Series', 'gear', shref('settings')],
+    ];
+    activeTab = tab === 'e' ? 'world' : tab;
+    if (tab === 'books') main = viewBooks(series);
+    else if (tab === 'world') main = viewWorld(p, S.route.id);
+    else if (tab === 'e') main = viewEntity(p, S.route.id);
+    else if (tab === 'continuity') main = viewContinuity(p);
+    else if (tab === 'settings') main = viewSeriesSettings(series);
+    else { activeTab = 'timeline'; main = viewTimeline(series); }
+    crumbs = [h('a', { class: 'top__project', href: shref() }, series.title), h('span', { class: 'pill pill--series' }, 'Series')];
+  } else {
+    document.title = `${p.title} · Planner`;
+    tabs = [
+      ['grid', 'Grid', 'grid', phref()],
+      ['world', series ? 'Shared world' : 'World', 'globe', phref('world')],
+      ['continuity', 'Continuity', 'link', phref('continuity')],
+      ['project', series ? 'Book' : 'Project', 'gear', phref('project')],
+    ];
+    if (series) tabs.unshift(['series', 'Timeline', 'timeline', shref()]);
+    activeTab = tab === 'e' ? 'world' : tab;
+    if (tab === 'world') main = viewWorld(p, S.route.id);
+    else if (tab === 'e') main = viewEntity(p, S.route.id);
+    else if (tab === 'continuity') main = viewContinuity(p);
+    else if (tab === 'project') main = viewProject(p);
+    else { activeTab = 'grid'; main = viewGrid(p); }
+    crumbs = series
+      ? [h('a', { class: 'top__project', href: shref() }, series.title), h('span', { class: 'crumb-sep', 'aria-hidden': 'true' }, '›'), h('a', { class: 'top__book', href: phref() }, p.title)]
+      : [h('a', { class: 'top__project', href: phref() }, p.title)];
+  }
 
-  const shell = h('div', { class: 'page' + (activeTab === 'grid' ? ' page--grid' : '') },
+  const wide = activeTab === 'grid' || activeTab === 'timeline';
+  const shell = h('div', { class: 'page' + (wide ? ' page--grid' : '') },
     h('header', { class: 'top' },
       brand(),
-      h('a', { class: 'top__project', href: phref() }, p.title),
-      h('nav', { class: 'tabs', 'aria-label': 'Views' }, tabs.map(([id, label, ic]) =>
-        h('a', { class: 'tab' + (activeTab === id ? ' is-on' : ''), href: phref(id === 'grid' ? '' : id), 'aria-current': activeTab === id ? 'page' : null },
+      h('span', { class: 'top__crumbs' }, crumbs),
+      h('nav', { class: 'tabs', 'aria-label': 'Views' }, tabs.map(([id, label, ic, url]) =>
+        h('a', { class: 'tab' + (activeTab === id ? ' is-on' : ''), href: url, 'aria-current': activeTab === id ? 'page' : null },
           icon(ic), h('span', {}, label)))),
       h('div', { class: 'top__right' }, searchBox(p),
         h('button', { class: 'iconbtn', type: 'button', title: 'Name generator', 'aria-label': 'Name generator', onclick: () => nameDialog({ kind: S.route.tab === 'world' || S.route.tab === 'e' ? kindForType((p.types.find((t) => t.id === S.route.id) || typeOf(entity(S.route.id)) || {}).name) : undefined, createType: S.route.tab === 'world' ? S.route.id : null }) }, icon('dice')),
@@ -414,13 +512,14 @@ function searchBox(p) {
     for (const e of p.entities) {
       const t = typeOf(e);
       const text = [e.name, e.summary, e.notes, ...(t ? t.fields.map((f) => valueText(p, f, e.fields[f.id])) : [])].join(' ').toLowerCase();
-      if (text.includes(q)) results.push({ label: e.name || 'Unnamed', sub: t ? t.singular : 'Entry', color: t?.color, go: () => go(`p/${S.slug}/e/${e.id}`), rank: (e.name || '').toLowerCase().includes(q) ? 0 : 2 });
+      if (text.includes(q)) results.push({ label: e.name || 'Unnamed', sub: t ? t.singular : 'Entry', color: t?.color, go: () => go(pbase('e/' + e.id)), rank: (e.name || '').toLowerCase().includes(q) ? 0 : 2 });
     }
     for (const k of p.cards) {
       const text = [k.title, k.summary, k.notes, ...p.cardFields.map((f) => valueText(p, f, k.fields[f.id]))].join(' ').toLowerCase();
-      if (text.includes(q)) results.push({ label: k.title || 'Untitled scene', sub: cardLabel(p, k).split(' · ')[0] + ' · ' + (p.rows.find((r) => r.id === k.rowId)?.title || ''), color: p.rows.find((r) => r.id === k.rowId)?.color, go: () => editCard(k.id), rank: (k.title || '').toLowerCase().includes(q) ? 1 : 3 });
+      const ci = cardInfo(k);
+      if (text.includes(q)) results.push({ label: k.title || 'Untitled scene', sub: (otherBook(ci.b) ? ci.b.title + ' · ' : '') + ci.num + ' · ' + (ci.row?.title || ''), color: ci.row?.color, go: () => openCard(k.id), rank: (k.title || '').toLowerCase().includes(q) ? 1 : 3 });
     }
-    p.columns.forEach((c) => {
+    if (!inSeriesTop()) p.columns.forEach((c) => {
       if ([c.title, c.teaser, c.recap, c.notes].join(' ').toLowerCase().includes(q)) results.push({ label: c.title || colName(p, c), sub: colName(p, c), go: () => editColumn(c.id), rank: 1 });
     });
     results.sort((a, b) => a.rank - b.rank);
@@ -691,8 +790,9 @@ function cardEl(p, k, r) {
   const ents = k.entityIds.map(entity).filter(Boolean);
   const dim = (S.highlight && !k.entityIds.includes(S.highlight)) || (S.statusFilter && k.status !== S.statusFilter);
   const hit = !dim && (S.highlight || S.statusFilter);
-  const payoffOf = p.cards.find((x) => x.payoffId === k.id);
-  const payoff = k.setup && k.payoffId ? p.cards.find((x) => x.id === k.payoffId) : null;
+  const payoffOf = scopeCards().find((x) => x.payoffId === k.id);
+  const payoff = k.setup && k.payoffId ? findCard(k.payoffId) : null;
+  const where = (x) => { const ci = cardInfo(x); return otherBook(ci.b) ? ci.b.title : ci.num; };
   const st = STATUSES.find(([v]) => v === k.status) || STATUSES[0];
   const el = h('article', {
     class: `card st-${k.status}` + (dim ? ' is-dim' : '') + (hit ? ' is-hit' : ''),
@@ -708,8 +808,8 @@ function cardEl(p, k, r) {
   !S.compact && k.summary ? h('p', { class: 'card__sum' }, k.summary) : null,
   (k.setup || payoffOf) ? h('div', { class: 'card__flags' },
     k.setup ? h('span', { class: 'flag' + (payoff ? '' : ' flag--open') }, icon('flag'),
-      payoff ? `Pays off in ${numeral(p, colIndex(payoff.colId))}` : 'Setup, not paid off') : null,
-    payoffOf ? h('span', { class: 'flag flag--done' }, icon('check'), `Payoff from ${numeral(p, colIndex(payoffOf.colId))}`) : null) : null,
+      payoff ? `Pays off in ${where(payoff)}` : 'Setup, not paid off') : null,
+    payoffOf ? h('span', { class: 'flag flag--done' }, icon('check'), `Payoff from ${where(payoffOf)}`) : null) : null,
   !S.compact && ents.length ? h('div', { class: 'card__chips' },
     ents.slice(0, 6).map((e) => h('span', { class: 'chip chip--sm', style: { '--c': typeOf(e)?.color } }, e.name || 'Unnamed')),
     ents.length > 6 ? h('span', { class: 'chip chip--sm chip--more' }, `+${ents.length - 6}`) : null) : null);
@@ -801,14 +901,14 @@ function newCard(colId, rowId) {
   change((p) => {
     let last = -1;
     p.cards.forEach((x, ix) => { if (x.colId === colId && x.rowId === rowId) last = ix; });
-    p.cards.splice(last + 1, 0, { id, colId, rowId, title: '', summary: '', notes: '', status: 'idea', entityIds: [], setup: false, payoffId: null, fields: {} });
+    p.cards.splice(last + 1, 0, { id, colId, rowId, title: '', summary: '', notes: '', status: 'idea', entityIds: [], setup: false, payoffId: null, fields: {}, links: [], when: null });
   }, { render: false });
   editCard(id, true);
 }
 
 // ---------- Card dialog ----------
 
-function editCard(id, isNew = false) {
+function editCard(id, isNew = false, after = null) {
   const p = P();
   const k = () => p.cards.find((x) => x.id === id);
   if (!k()) return;
@@ -820,7 +920,7 @@ function editCard(id, isNew = false) {
   const drawSetup = () => {
     clear(setupBox);
     const c = k();
-    const paysOff = p.cards.filter((x) => x.payoffId === c.id);
+    const paysOff = scopeCards().filter((x) => x.payoffId === c.id);
     append(setupBox, [
       h('label', { class: 'check' },
         h('input', { type: 'checkbox', checked: !!c.setup, onchange: (e) => { upd((c) => { c.setup = e.target.checked; if (!c.setup) c.payoffId = null; }); drawSetup(); } }),
@@ -828,7 +928,7 @@ function editCard(id, isNew = false) {
       c.setup ? h('label', { class: 'field field--inline' }, h('span', { class: 'field__label' }, 'Pays off in'),
         cardSelect(p, c.payoffId, c.id, (v) => upd((c) => { c.payoffId = v || null; }))) : null,
       paysOff.map((s) => h('p', { class: 'note' }, icon('check'), 'Pays off the setup in ',
-        h('button', { class: 'linkbtn', type: 'button', onclick: () => { d.close(); editCard(s.id); } }, cardLabel(p, s)))),
+        h('button', { class: 'linkbtn', type: 'button', onclick: () => { d.close(); setTimeout(() => openCard(s.id), 0); } }, cardLabel(p, s)))),
     ]);
   };
   drawSetup();
@@ -853,6 +953,7 @@ function editCard(id, isNew = false) {
         : h('p', { class: 'muted small' }, 'Add entry types (characters, places…) in the Project tab to link them here.')),
     p.cardFields.map((f) => fieldInput(p, f, () => k().fields[f.id], (v) => upd((c) => { c.fields[f.id] = v; }))),
     h('div', { class: 'field' }, h('span', { class: 'field__label' }, 'Setup & payoff'), setupBox),
+    isSeries() ? timelineFields(p, k, upd, () => d) : null,
     h('label', { class: 'field' }, h('span', { class: 'field__label' }, 'Notes'),
       autosize(h('textarea', { class: 'input', rows: 2, value: k().notes, placeholder: 'Anything else: lines of dialogue, research, doubts', oninput: (e) => upd((c) => { c.notes = e.target.value; }) }))),
     h('details', { class: 'more' }, h('summary', {}, 'Move'),
@@ -860,13 +961,17 @@ function editCard(id, isNew = false) {
   ];
 
   const d = openDialog({
-    title: `${col ? colName(p, col) : ''} · ${row ? row.title : ''}`,
+    title: `${isSeries() ? p.title + ' · ' : ''}${col ? colName(p, col) : ''} · ${row ? row.title : ''}`,
     body, wide: true,
     actions: [
       h('button', { class: 'btn btn--ghost btn--danger', type: 'button', onclick: async () => {
+        const book = p;
         d.close();
-        if (await confirmDanger('Delete this card?', `“${k()?.title || 'Untitled scene'}” will be removed. You can get it back from the project’s backups.`)) {
-          change((p) => { p.cards = p.cards.filter((x) => x.id !== id); p.cards.forEach((x) => { if (x.payoffId === id) x.payoffId = null; }); });
+        if (await confirmDanger('Delete this card?', `“${k()?.title || 'Untitled scene'}” will be removed. You can get it back from the backups.`)) {
+          change(() => {
+            book.cards = book.cards.filter((x) => x.id !== id);
+            scopeCards().forEach((x) => { if (x.payoffId === id) x.payoffId = null; x.links = (x.links || []).filter((l) => l.id !== id); });
+          });
         }
       } }, icon('trash'), ' Delete'),
       h('span', { class: 'spacer' }),
@@ -875,20 +980,75 @@ function editCard(id, isNew = false) {
     onClose: () => {
       const c = k();
       if (isNew && c && !c.title.trim() && !c.summary.trim() && !c.notes.trim() && !c.entityIds.length) {
-        change((p) => { p.cards = p.cards.filter((x) => x.id !== id); });
-      } else if (S.route.view === 'project') render();
+        change(() => { p.cards = p.cards.filter((x) => x.id !== id); }, { render: !after });
+      }
+      if (after) after();
+      else if (S.route.view === 'project') render();
     },
   });
+}
+
+// Every card in reach, grouped by part (and by book in a series).
+function cardOptions(p, value, selfId) {
+  const books = isSeries() ? [p, ...S.project.books.filter((b) => b !== p)] : [p];
+  return books.flatMap((b) => b.columns.map((c, i) => {
+    const cards = b.cards.filter((x) => x.colId === c.id && x.id !== selfId);
+    const label = `${otherBook(b) ? b.title + ' · ' : ''}${b.labels.column} ${numeral(b, i)}${c.title ? ': ' + c.title : ''}`;
+    return cards.length ? h('optgroup', { label },
+      cards.map((x) => h('option', { value: x.id, selected: x.id === value }, x.title || 'Untitled scene'))) : null;
+  }));
 }
 
 function cardSelect(p, value, selfId, onChange) {
   return h('select', { class: 'input', onchange: (e) => onChange(e.target.value) },
     h('option', { value: '' }, 'Not yet (still open)'),
-    p.columns.map((c, i) => {
-      const cards = p.cards.filter((x) => x.colId === c.id && x.id !== selfId);
-      return cards.length ? h('optgroup', { label: `${p.labels.column} ${numeral(p, i)}${c.title ? ': ' + c.title : ''}` },
-        cards.map((x) => h('option', { value: x.id, selected: x.id === value }, x.title || 'Untitled scene'))) : null;
-    }));
+    cardOptions(p, value, selfId));
+}
+
+// "When in the story" and linked scenes, for cards in a series.
+function timelineFields(p, k, upd, dlg) {
+  const cal = S.project.calendar;
+  const box = h('div', { class: 'tlf' });
+  const draw = () => {
+    clear(box);
+    const c = k();
+    const w = c.when;
+    if (!c.links) c.links = [];
+    const linkedHere = scopeCards().filter((x) => x !== c && (x.links || []).some((l) => l.id === c.id));
+    append(box, [
+      h('div', { class: 'tlf__head' }, icon('timeline', 'ico--accent'), h('strong', {}, 'On the series timeline')),
+      h('div', { class: 'row3' },
+        h('label', { class: 'field' }, h('span', { class: 'field__label' }, 'Year'),
+          h('select', { class: 'input', onchange: (e) => { const v = e.target.value; upd((c) => { c.when = v === '' ? null : { y: +v, p: c.when ? c.when.p : 0, day: c.when ? c.when.day : '' }; }); draw(); } },
+            h('option', { value: '', selected: !w }, 'Not placed yet'),
+            cal.years.map((y, i) => h('option', { value: String(i), selected: !!w && w.y === i }, y)))),
+        h('label', { class: 'field' }, h('span', { class: 'field__label' }, 'When in the year'),
+          h('select', { class: 'input', disabled: !w, onchange: (e) => upd((c) => { if (c.when) c.when.p = +e.target.value; }) },
+            cal.parts.map((x, i) => h('option', { value: String(i), selected: !!w && w.p === i }, x)))),
+        h('label', { class: 'field' }, h('span', { class: 'field__label' }, 'Day (optional)'),
+          h('input', { class: 'input', disabled: !w, value: (w && w.day) || '', placeholder: 'First frost', oninput: (e) => upd((c) => { if (c.when) c.when.day = e.target.value; }) }))),
+      h('div', { class: 'field' }, h('span', { class: 'field__label' }, 'Linked scenes'),
+        h('div', { class: 'tlf__links' },
+          (c.links || []).map((l, i) => {
+            const o = findCard(l.id);
+            if (!o) return null;
+            return h('div', { class: 'tlf__link' },
+              h('button', { class: 'linkbtn', type: 'button', onclick: () => { dlg().close(); setTimeout(() => openCard(o.id), 0); } }, cardLabel(p, o)),
+              h('select', { class: 'input input--sm', 'aria-label': 'How the scenes are linked', onchange: (e) => upd((c) => { c.links[i].kind = e.target.value; }) },
+                LINK_KINDS.map(([v, lbl]) => h('option', { value: v, selected: l.kind === v }, lbl))),
+              h('button', { class: 'iconbtn', type: 'button', 'aria-label': 'Remove link', onclick: () => { upd((c) => { c.links.splice(i, 1); }); draw(); } }, icon('x')));
+          }),
+          linkedHere.map((o) => h('div', { class: 'tlf__link tlf__link--in' },
+            h('button', { class: 'linkbtn', type: 'button', onclick: () => { dlg().close(); setTimeout(() => openCard(o.id), 0); } }, cardLabel(p, o)),
+            h('span', { class: 'muted small' }, (LINK_KINDS.find(([v]) => v === (o.links.find((l) => l.id === c.id) || {}).kind) || ['', 'Linked'])[1] + ' (linked from that scene)'))),
+          h('select', { class: 'input input--sm tlf__add', 'aria-label': 'Link a scene', onchange: (e) => {
+            const v = e.target.value; if (!v) return;
+            upd((c) => { c.links.push({ id: v, kind: 'same' }); }); draw();
+          } }, h('option', { value: '' }, '+ Link a scene…'), cardOptions(p, '', c.id)))),
+    ]);
+  };
+  draw();
+  return box;
 }
 
 // ---------- Column & row dialogs ----------
@@ -1148,7 +1308,9 @@ function ledgerEditor(p, get, set) {
         h('select', { class: 'input ledger__col', 'aria-label': 'First shown to readers in', title: 'First shown to readers in',
           onchange: (e) => { const l = rows(); l[i].colId = e.target.value; set(l); } },
         h('option', { value: '' }, 'Not revealed yet'),
-        p.columns.map((c, ci) => h('option', { value: c.id, selected: r.colId === c.id }, `Revealed in ${numeral(p, ci)}`))),
+        isSeries()
+          ? S.project.books.map((b) => h('optgroup', { label: b.title }, b.columns.map((c, ci) => h('option', { value: c.id, selected: r.colId === c.id }, `Revealed in ${b.labels.column} ${numeral(b, ci)}`))))
+          : p.columns.map((c, ci) => h('option', { value: c.id, selected: r.colId === c.id }, `Revealed in ${numeral(p, ci)}`))),
         h('button', { class: 'iconbtn', type: 'button', 'aria-label': 'Remove', onclick: () => { set(rows().filter((_, j) => j !== i)); draw(); } }, icon('x'))));
     });
     wrap.append(h('button', { class: 'btn btn--ghost btn--sm', type: 'button', onclick: () => { set([...rows(), { id: uid(), text: '', colId: '' }]); draw(true); } }, icon('plus'), ' Add'));
@@ -1213,7 +1375,7 @@ function nameDialog({ kind, onUse, useLabel, createType } = {}) {
     if (!t) { copy(n); return; }
     const e = newEntity(t.id, n);
     d.close();
-    go(`p/${S.slug}/e/${e.id}`);
+    go(pbase('e/' + e.id));
     toast(`Created ${lower(t.singular)} “${n}”`);
   };
   const copy = async (n) => { try { await navigator.clipboard.writeText(n); toast(`Copied “${n}”`); } catch { toast(n); } };
@@ -1306,8 +1468,31 @@ function viewWorld(p, typeId) {
         h('span', { class: 'spacer' }),
         all.length > 6 ? h('div', { class: 'world__filter' }, filter) : null,
         h('button', { class: 'btn btn--sm', type: 'button', onclick: () => nameDialog({ kind: kindForType(t.name), createType: t.id }) }, icon('dice'), ' Name ideas'),
-        h('button', { class: 'btn btn--primary btn--sm', type: 'button', onclick: () => { const e = newEntity(t.id); go(`p/${S.slug}/e/${e.id}`); } }, icon('plus'), ` New ${lower(t.singular)}`)),
+        h('button', { class: 'btn btn--primary btn--sm', type: 'button', onclick: () => { const e = newEntity(t.id); go(pbase('e/' + e.id)); } }, icon('plus'), ` New ${lower(t.singular)}`)),
+      isSeries() ? duplicatesPanel() : null,
       all.length ? grid : h('p', { class: 'muted' }, `No ${lower(t.name)} yet. Add one here, or type a new name into “In this scene” on any card.`)));
+}
+
+// Entries with the same type and name, usually from books moved into a series.
+function duplicatesPanel() {
+  const dups = findDuplicates(S.project);
+  if (!dups.length) return null;
+  return h('section', { class: 'dups' },
+    h('h2', { class: 'dups__title' }, icon('layers'), ` Possible duplicates (${dups.length})`),
+    h('p', { class: 'muted small' }, 'Same name, same type. Merging keeps one entry with everything from both, and points every scene at it.'),
+    h('ul', { class: 'list' }, dups.map((g) => {
+      const t = typeOf(g[0]);
+      return h('li', { class: 'list__row' },
+        h('span', { class: 'chip', style: { '--c': t?.color } }, g[0].name),
+        h('span', { class: 'muted small' }, `${t?.singular || 'Entry'} · ${g.length} copies · in ${g.map((e) => appearances(P(), e.id).length).join(' + ')} scenes`),
+        h('span', { class: 'spacer' }),
+        h('button', { class: 'btn btn--sm', type: 'button', onclick: async () => {
+          if (!(await choose({ title: `Merge “${g[0].name}”?`, message: `The ${g.length} entries become one. Fields that differ are combined, and you can tidy them afterwards. The series backups keep the separate versions.`,
+            choices: [{ label: 'Cancel', value: false }, { label: 'Merge', value: true, kind: 'primary' }] }))) return;
+          change(() => { for (const e of g.slice(1)) mergeEntities(S.project, g[0].id, e.id); });
+          toast(`Merged into one “${g[0].name}”`);
+        } }, 'Merge'));
+    })));
 }
 
 function viewEntity(p, id) {
@@ -1343,10 +1528,11 @@ function viewEntity(p, id) {
   const aside = h('aside', { class: 'entity__aside' },
     h('h2', { class: 'aside__title' }, 'Appears in'),
     apps.length ? h('ul', { class: 'apps' }, apps.map((k) => {
-      const r = p.rows.find((x) => x.id === k.rowId);
-      return h('li', {}, h('button', { class: 'app', type: 'button', style: { '--c': r?.color }, onclick: () => editCard(k.id) },
-        h('span', { class: 'app__num' }, numeral(p, colIndex(k.colId))),
-        h('span', { class: 'app__text' }, h('span', { class: 'app__title' }, k.title || 'Untitled scene'), h('span', { class: 'app__sub' }, r?.title || ''))));
+      const ci = cardInfo(k);
+      return h('li', {}, h('button', { class: 'app', type: 'button', style: { '--c': ci.row?.color }, onclick: () => openCard(k.id) },
+        h('span', { class: 'app__num' }, ci.num),
+        h('span', { class: 'app__text' }, h('span', { class: 'app__title' }, k.title || 'Untitled scene'),
+          h('span', { class: 'app__sub' }, (isSeries() ? ci.b.title + ' · ' : '') + (ci.row?.title || '')))));
     })) : h('p', { class: 'muted small' }, 'Not in any scene yet. Link it from a card’s “In this scene”.'),
     linkedFrom.length ? [h('h2', { class: 'aside__title' }, 'Linked from'),
       h('ul', { class: 'apps' }, linkedFrom.map((l) => h('li', {}, h('a', { class: 'app', href: phref('e/' + l.e.id), style: { '--c': l.color } },
@@ -1359,12 +1545,12 @@ function viewEntity(p, id) {
         h('span', { class: 'spacer' }), typeSel,
         h('button', { class: 'btn btn--ghost btn--sm btn--danger', type: 'button', onclick: async () => {
           if (await confirmDanger(`Delete ${e.name || 'this entry'}?`, apps.length || linkedFrom.length ? 'It will also be unlinked from every card and entry that mentions it.' : 'It isn’t linked anywhere.')) {
-            const back = 'p/' + S.slug + '/world/' + (t?.id || '');
+            const back = pbase('world/' + (t?.id || ''));
             change((p) => {
               p.entities = p.entities.filter((x) => x.id !== id);
-              for (const k of p.cards) k.entityIds = k.entityIds.filter((x) => x !== id);
+              for (const k of scopeCards()) k.entityIds = k.entityIds.filter((x) => x !== id);
               for (const o of p.entities) for (const [fid, v] of Object.entries(o.fields)) if (Array.isArray(v)) o.fields[fid] = v.filter((x) => x !== id);
-              for (const k of p.cards) for (const [fid, v] of Object.entries(k.fields)) if (Array.isArray(v)) k.fields[fid] = v.filter((x) => x !== id);
+              for (const k of scopeCards()) for (const [fid, v] of Object.entries(k.fields)) if (Array.isArray(v)) k.fields[fid] = v.filter((x) => x !== id);
             }, { render: false });
             go(back);
           }
@@ -1376,9 +1562,23 @@ function viewEntity(p, id) {
 // Continuity
 // ======================================================================
 
+// Where a part sits: its book, position, and a readable name.
+function colRef(colId) {
+  const books = isSeries() ? S.project.books : [S.project];
+  for (const [bi, b] of books.entries()) {
+    const i = b.columns.findIndex((c) => c.id === colId);
+    if (i >= 0) {
+      const c = b.columns[i];
+      return { b, c, i, order: bi * 10000 + i, label: `${isSeries() ? b.title + ' · ' : ''}${b.labels.column} ${numeral(b, i)}${c.title ? ': ' + c.title : ''}` };
+    }
+  }
+  return null;
+}
+
 function viewContinuity(p) {
-  const open = p.cards.filter((k) => k.setup && !k.payoffId).sort((a, b) => colIndex(a.colId) - colIndex(b.colId));
-  const pairs = p.cards.filter((k) => k.setup && k.payoffId).map((k) => ({ s: k, o: p.cards.find((x) => x.id === k.payoffId) })).filter((x) => x.o);
+  const pos = (k) => { const ci = cardInfo(k); return (isSeries() ? S.project.books.indexOf(ci.b) : 0) * 10000 + ci.i; };
+  const open = p.cards.filter((k) => k.setup && !k.payoffId).sort((a, b) => pos(a) - pos(b));
+  const pairs = p.cards.filter((k) => k.setup && k.payoffId).map((k) => ({ s: k, o: findCard(k.payoffId) })).filter((x) => x.o);
   const ledgers = [];
   for (const e of p.entities) {
     const t = typeOf(e);
@@ -1388,31 +1588,37 @@ function viewContinuity(p) {
     }
   }
   const unused = p.entities.filter((e) => !appearances(p, e.id).length);
-  const loose = p.cards.filter((k) => p.columns.find((c) => c.id === k.colId)?.canon && ['idea', 'outlined', 'drafting'].includes(k.status));
+  const loose = p.cards.filter((k) => colRef(k.colId)?.c.canon && ['idea', 'outlined', 'drafting'].includes(k.status));
 
-  const cardBtn = (k) => h('button', { class: 'linkbtn', type: 'button', onclick: () => editCard(k.id) }, cardLabel(p, k));
+  const cardBtn = (k) => h('button', { class: 'linkbtn', type: 'button', onclick: () => openCard(k.id) }, cardLabel(p, k));
   const section = (title, blurb, count, content) => h('section', { class: 'cont' },
     h('h2', { class: 'cont__title' }, title, h('span', { class: 'cont__count' }, String(count))),
     h('p', { class: 'muted small' }, blurb), content);
 
-  const byCol = [...p.columns.map((c) => ({ c, items: ledgers.filter((l) => l.r.colId === c.id) })), { c: null, items: ledgers.filter((l) => !l.r.colId || colIndex(l.r.colId) < 0) }]
-    .filter((g) => g.items.length);
+  const groups = new Map();
+  for (const l of ledgers) {
+    const ref = l.r.colId ? colRef(l.r.colId) : null;
+    const key = ref ? l.r.colId : '';
+    if (!groups.has(key)) groups.set(key, { ref, items: [] });
+    groups.get(key).items.push(l);
+  }
+  const byCol = [...groups.values()].sort((a, b) => (a.ref ? a.ref.order : 1e9) - (b.ref ? b.ref.order : 1e9));
 
   return h('div', { class: 'wrap cont-wrap' },
     h('h1', { class: 'display' }, 'Continuity'),
-    h('p', { class: 'muted lede' }, 'Promises you’ve made to readers, and whether you’ve kept them.'),
+    h('p', { class: 'muted lede' }, inSeriesTop() ? 'Promises made to readers across every book in the series, and whether they’ve been kept.' : 'Promises you’ve made to readers, and whether you’ve kept them.'),
     section('Open setups', 'Cards marked as a setup with no payoff chosen yet.', open.length,
       open.length ? h('ul', { class: 'clist' }, open.map((k) => h('li', {}, icon('flag', 'ico--accent'), cardBtn(k)))) : h('p', { class: 'ok' }, icon('check'), ' Every setup has a payoff.')),
     section('Setups & payoffs', 'Each setup and where it pays off.', pairs.length,
       pairs.length ? h('ul', { class: 'clist' }, pairs.map(({ s, o }) => {
-        const bad = colIndex(o.colId) < colIndex(s.colId);
+        const bad = pos(o) < pos(s);
         return h('li', { class: bad ? 'is-warn' : '' }, cardBtn(s), h('span', { class: 'arrow' }, ' → '), cardBtn(o),
           bad ? h('span', { class: 'warn' }, icon('alert'), ' Pays off before it’s set up') : null);
       })) : h('p', { class: 'muted small' }, 'None yet. Tick “Plants a setup” on a card to track it.')),
     section('Rules & facts, in the order readers learn them', 'Collected from every rules/facts ledger in your world (magic systems, lore…).', ledgers.length,
       byCol.length ? h('div', { class: 'timeline' }, byCol.map((g) => h('div', { class: 'timeline__group' },
-        h('h3', { class: 'timeline__head' }, g.c ? `${p.labels.column} ${numeral(p, colIndex(g.c.id))}${g.c.title ? ': ' + g.c.title : ''}` : 'Not revealed yet',
-          g.c?.canon ? h('span', { class: 'pill pill--canon' }, icon('lock'), 'Published') : null),
+        h('h3', { class: 'timeline__head' }, g.ref ? g.ref.label : 'Not revealed yet',
+          g.ref?.c.canon ? h('span', { class: 'pill pill--canon' }, icon('lock'), 'Published') : null),
         h('ul', { class: 'clist' }, g.items.map((l) => h('li', {},
           h('a', { class: 'chip chip--sm', href: phref('e/' + l.e.id), style: { '--c': l.t.color } }, l.e.name || 'Unnamed'),
           h('span', {}, ' ' + l.r.text))))))) : h('p', { class: 'muted small' }, 'Add rules to a magic system (or any entry with a ledger field) and they’ll line up here by part.')),
@@ -1443,8 +1649,10 @@ function viewProject(p) {
 
   const sec = (id, title, blurb, ...kids) => h('section', { class: 'psec', id }, h('h2', { class: 'psec__title' }, title), blurb ? h('p', { class: 'muted small' }, blurb) : null, kids);
 
+  const book = isSeries();
   const view = h('div', { class: 'wrap project' },
-    h('h1', { class: 'display' }, 'Project'),
+    h('h1', { class: 'display' }, book ? 'Book settings' : 'Project'),
+    book ? h('p', { class: 'muted lede' }, `This book is part of “${S.project.title}”. Its world is shared with every book in the series.`) : null,
     sec('basics', 'Basics', null,
       text('Title', () => p.title, (v) => { p.title = v; }),
       text('Synopsis', () => p.synopsis, (v) => { p.synopsis = v; }, { long: true }),
@@ -1462,25 +1670,49 @@ function viewProject(p) {
           h('span', {}, h('strong', {}, `Group ${lower(p.labels.column)}s into acts`), h('br'),
             h('span', { class: 'muted small' }, 'Adds a row of acts above the grid. Turning it off keeps your acts for later.'))),
         text('Acts are called', () => p.labels.act, (v) => { p.labels.act = v || 'Act'; }, { placeholder: 'Act' }))),
-    sec('notebook', 'Notebook', 'A scratchpad for the whole project: themes, the ending you’re aiming for, questions to answer.',
+    book ? h('label', { class: 'field' }, h('span', { class: 'field__label' }, 'Series line'),
+      h('select', { class: 'input', onchange: (e) => upd(() => { p.groupId = e.target.value; }) },
+        S.project.groups.map((g) => h('option', { value: g.id, selected: g.id === p.groupId }, g.title)))) : null,
+    sec('notebook', 'Notebook', book ? 'A scratchpad for this book.' : 'A scratchpad for the whole project: themes, the ending you’re aiming for, questions to answer.',
       autosize(h('textarea', { class: 'input notebook', rows: 6, value: p.notes, 'aria-label': 'Notebook', oninput: (e) => upd(() => { p.notes = e.target.value; }) }))),
-    sec('types', 'Entry types', 'The kinds of things in this world, and the fields each one has. Changes apply to every entry of that type.', typesWrap),
+    sec('types', 'Entry types', book ? 'Shared by every book in the series. Changes apply to every entry of that type, in every book.' : 'The kinds of things in this world, and the fields each one has. Changes apply to every entry of that type.', typesWrap),
     sec('cardfields', 'Extra card fields', 'Fields every scene card gets, on top of title, summary, status and links.',
       fieldsEditor(p, p.cardFields)),
-    sec('backups', 'Backups & files', DEMO ? 'Demo mode keeps no backups.' : 'The server keeps your last 40 saves, plus the first save of each day for four months.',
-      h('div', { class: 'btnrow' },
-        DEMO ? null : h('button', { class: 'btn', type: 'button', onclick: backupsDialog }, 'Browse backups'),
-        h('button', { class: 'btn', type: 'button', onclick: () => download(`${S.slug}-${new Date().toISOString().slice(0, 10)}.json`, JSON.stringify(p, null, 1)) }, icon('download'), ' Download a copy'),
-        h('label', { class: 'btn' }, 'Replace from a file…', h('input', { type: 'file', accept: '.json,application/json', class: 'sr-only', onchange: importFile })))),
-    sec('danger', 'Delete', null,
-      h('button', { class: 'btn btn--danger', type: 'button', onclick: async () => {
-        if (!(await confirmDanger(`Delete “${p.title}”?`, 'It disappears from your projects. You can bring it back from “Restore a deleted project” on the home screen.'))) return;
-        try { await saveNow(); await store.remove(S.slug); unsaved.clear(scope(), S.slug); S.project = null; S.slug = null; go(''); }
-        catch (e) { toast(e.message); }
-      } }, icon('trash'), ' Delete project')));
+    book ? null : backupSection(),
+    book ? null : sec('move', 'Move into a series', 'Make this project a book in one of your series. Its characters, places and other entries join the series’ shared world, and you can merge any duplicates afterwards.',
+      h('button', { class: 'btn', type: 'button', onclick: () => moveIntoSeriesDialog(S.slug) }, icon('layers'), ' Choose a series…')),
+    book
+      ? sec('danger', 'Remove this book', null,
+        h('button', { class: 'btn btn--danger', type: 'button', onclick: async () => {
+          if (!(await confirmDanger(`Remove “${p.title}” from the series?`, 'Its grid and cards are deleted. Shared characters and places stay. The series backups keep a copy.'))) return;
+          const id = p.id;
+          S.bookId = null;
+          change(() => {
+            const gone = new Set(S.project.books.find((b) => b.id === id).cards.map((k) => k.id));
+            S.project.books = S.project.books.filter((b) => b.id !== id);
+            for (const k of scopeCards()) { if (gone.has(k.payoffId)) k.payoffId = null; k.links = (k.links || []).filter((l) => !gone.has(l.id)); }
+          }, { render: false });
+          go(`s/${S.slug}/books`);
+        } }, icon('trash'), ' Remove book'))
+      : sec('danger', 'Delete', null,
+        h('button', { class: 'btn btn--danger', type: 'button', onclick: async () => {
+          if (!(await confirmDanger(`Delete “${p.title}”?`, 'It disappears from your projects. You can bring it back from “Restore a deleted project” on the home screen.'))) return;
+          try { await saveNow(); await store.remove(S.slug); unsaved.clear(scope(), S.slug); S.project = null; S.slug = null; go(''); }
+          catch (e) { toast(e.message); }
+        } }, icon('trash'), ' Delete project')));
 
   if (location.hash.endsWith('#types')) requestAnimationFrame(() => document.getElementById('types')?.scrollIntoView());
   return view;
+}
+
+function backupSection() {
+  const series = isSeries();
+  return h('section', { class: 'psec', id: 'backups' }, h('h2', { class: 'psec__title' }, 'Backups & files'),
+    h('p', { class: 'muted small' }, DEMO ? 'Demo mode keeps no backups.' : `The server keeps the last 40 saves of this ${series ? 'series (every book and the shared world)' : 'project'}, plus the first save of each day for four months.`),
+    h('div', { class: 'btnrow' },
+      DEMO ? null : h('button', { class: 'btn', type: 'button', onclick: backupsDialog }, 'Browse backups'),
+      h('button', { class: 'btn', type: 'button', onclick: () => download(`${S.slug}-${new Date().toISOString().slice(0, 10)}.json`, JSON.stringify(S.project, null, 1)) }, icon('download'), ' Download a copy'),
+      h('label', { class: 'btn' }, 'Replace from a file…', h('input', { type: 'file', accept: '.json,application/json', class: 'sr-only', onchange: importFile }))));
 }
 
 function typeEditor(p, t, redraw) {
@@ -1503,7 +1735,7 @@ function typeEditor(p, t, redraw) {
           const gone = new Set(p.entities.filter((e) => e.typeId === t.id).map((e) => e.id));
           p.types = p.types.filter((x) => x.id !== t.id);
           p.entities = p.entities.filter((e) => !gone.has(e.id));
-          for (const k of p.cards) k.entityIds = k.entityIds.filter((x) => !gone.has(x));
+          for (const k of scopeCards()) k.entityIds = k.entityIds.filter((x) => !gone.has(x));
           for (const ty of p.types) for (const f of ty.fields) if (f.linkType === t.id) f.linkType = null;
         }, { render: false });
         redraw();
@@ -1517,7 +1749,7 @@ async function newType(navigate = false, redraw) {
   const t = { id: uid(), name, singular: singular || name, color: PALETTE[P().types.length % PALETTE.length], fields: [{ id: uid(), name: 'Description', type: 'longtext' }] };
   change((p) => p.types.push(t), { render: !redraw });
   if (redraw) redraw();
-  if (navigate) go(`p/${S.slug}/world/${t.id}`);
+  if (navigate) go(pbase('world/' + t.id));
 }
 
 function fieldsEditor(p, fields) {
@@ -1566,7 +1798,8 @@ async function backupsDialog() {
           try {
             const data = await store.backup(S.slug, b.id);
             d.close();
-            S.project = normalize(data);
+            S.project = prepare(data);
+            if (S.bookId && isSeries() && !S.project.books.some((x) => x.id === S.bookId)) S.bookId = null;
             change(() => {});
             toast('Restored the version from ' + fmtTime(b.at));
           } catch (e) { toast(e.message); }
@@ -1580,12 +1813,565 @@ async function importFile(e) {
   e.target.value = '';
   if (!file) return;
   try {
-    const data = normalize(JSON.parse(await file.text()));
-    if (!(await confirmDanger('Replace this project?', `Everything here will be replaced with “${data.title}” from ${file.name}. The current version is kept in backups.`, 'Replace'))) return;
+    const raw = JSON.parse(await file.text());
+    if ((raw.kind === 'series') !== isSeries()) { toast(isSeries() ? 'That file is a single project, not a series.' : 'That file is a whole series. Open a series to replace it.'); return; }
+    const data = prepare(raw);
+    if (!(await confirmDanger(isSeries() ? 'Replace this whole series?' : 'Replace this project?', `Everything here will be replaced with “${data.title}” from ${file.name}. The current version is kept in backups.`, 'Replace'))) return;
     S.project = data;
+    if (S.bookId && isSeries() && !S.project.books.some((x) => x.id === S.bookId)) S.bookId = null;
     change(() => {});
     toast('Replaced from ' + file.name);
   } catch { toast('That file isn’t a planner project.'); }
+}
+
+// ======================================================================
+// Series: books list, settings, creating and moving
+// ======================================================================
+
+function bookStats(b) {
+  const pub = b.columns.filter((c) => c.canon).length;
+  const parts = plural(b.columns.length, lower(b.labels.column));
+  return `${parts} · ${plural(b.cards.length, 'scene')}${pub ? ` · ${pub} published` : ''}`;
+}
+
+function viewBooks(series) {
+  const books = series.books;
+  const groups = series.groups.map((g) => {
+    const mine = books.filter((b) => b.groupId === g.id);
+    return h('section', { class: 'line', style: { '--c': g.color } },
+      h('div', { class: 'line__head' },
+        h('span', { class: 'line__swatch' }),
+        h('h2', { class: 'line__title' }, g.title),
+        h('span', { class: 'muted small' }, plural(mine.length, 'book')),
+        h('span', { class: 'spacer' }),
+        h('button', { class: 'btn btn--ghost btn--sm', type: 'button', onclick: () => editLine(g.id) }, icon('gear'), ' Edit')),
+      mine.length ? h('ol', { class: 'blist' }, mine.map((b) => {
+        const i = books.indexOf(b);
+        return h('li', { class: 'brow' },
+          h('span', { class: 'brow__num', title: 'Reading order' }, String(i + 1)),
+          h('a', { class: 'brow__main', href: href(`s/${encodeURIComponent(S.slug)}/b/${encodeURIComponent(b.id)}`) },
+            h('span', { class: 'brow__title' }, b.title || 'Untitled book'),
+            h('span', { class: 'brow__meta' }, bookStats(b))),
+          h('span', { class: 'brow__btns' },
+            h('button', { class: 'iconbtn', type: 'button', 'aria-label': 'Earlier in reading order', title: 'Earlier in reading order', disabled: i === 0,
+              onclick: () => change((s) => { const [x] = s.books.splice(i, 1); s.books.splice(i - 1, 0, x); }) }, icon('up')),
+            h('button', { class: 'iconbtn', type: 'button', 'aria-label': 'Later in reading order', title: 'Later in reading order', disabled: i === books.length - 1,
+              onclick: () => change((s) => { const [x] = s.books.splice(i, 1); s.books.splice(i + 1, 0, x); }) }, icon('down')),
+            h('a', { class: 'btn btn--sm', href: href(`s/${encodeURIComponent(S.slug)}/b/${encodeURIComponent(b.id)}`) }, 'Open grid')));
+      })) : h('p', { class: 'muted small line__empty' }, 'No books in this line yet.'),
+      h('button', { class: 'btn btn--ghost btn--sm line__add', type: 'button', onclick: () => newBookDialog(g.id) }, icon('plus'), ' Add a book'));
+  });
+
+  return h('div', { class: 'wrap books' },
+    h('div', { class: 'books__head' },
+      h('div', {},
+        h('h1', { class: 'display' }, 'Books'),
+        h('p', { class: 'muted lede' }, 'Numbers are the reading order across the whole series. The timeline uses it too.')),
+      h('span', { class: 'spacer' }),
+      h('button', { class: 'btn', type: 'button', onclick: async () => {
+        const name = await ask('New supporting series', 'Name', '', 'Add');
+        if (!name) return;
+        change((s) => s.groups.push({ id: uid(), title: name, color: LINE_COLORS[s.groups.length % LINE_COLORS.length] }));
+      } }, icon('plus'), ' Supporting series')),
+    groups);
+}
+
+function editLine(id) {
+  const series = S.project;
+  const g = series.groups.find((x) => x.id === id);
+  const n = series.books.filter((b) => b.groupId === id).length;
+  const d = openDialog({
+    title: 'Edit series line',
+    body: [
+      h('label', { class: 'field' }, h('span', { class: 'field__label' }, 'Name'),
+        h('input', { class: 'input', value: g.title, oninput: (e) => change(() => { g.title = e.target.value; }, { render: false }) })),
+      h('div', { class: 'field' }, h('span', { class: 'field__label' }, 'Color on the timeline'),
+        (() => {
+          const wrap = h('div', { class: 'swatches' });
+          const draw = () => { clear(wrap); for (const c of LINE_COLORS) wrap.append(h('button', { class: 'swatch' + (g.color === c ? ' is-on' : ''), type: 'button', style: { '--c': c }, 'aria-label': 'Color ' + c, 'aria-pressed': String(g.color === c), onclick: () => { change(() => { g.color = c; }, { render: false }); draw(); } })); };
+          draw();
+          return wrap;
+        })()),
+    ],
+    actions: [
+      series.groups.length > 1 ? h('button', { class: 'btn btn--ghost btn--danger', type: 'button', onclick: async () => {
+        d.close();
+        const into = series.groups.find((x) => x.id !== id);
+        if (await confirmDanger(`Delete “${g.title}”?`, n ? `Its ${plural(n, 'book')} move to “${into.title}”. Nothing else changes.` : 'It has no books.')) {
+          change((s) => { for (const b of s.books) if (b.groupId === id) b.groupId = into.id; s.groups = s.groups.filter((x) => x.id !== id); });
+        }
+      } }, icon('trash'), ' Delete') : null,
+      h('span', { class: 'spacer' }),
+      h('button', { class: 'btn btn--primary', type: 'button', onclick: () => d.close() }, 'Done'),
+    ],
+    onClose: () => render(),
+  });
+}
+
+async function newBookDialog(groupId) {
+  const series = S.project;
+  let tpl = 'serial';
+  let standalone = [];
+  try { standalone = (await store.list()).filter((x) => x.kind !== 'series'); } catch { /* offline: blank only */ }
+  const title = h('input', { class: 'input', placeholder: `Book ${series.books.length + 1}`, autocomplete: 'off' });
+  const opts = h('div', { class: 'tpls' }, Object.entries(TEMPLATES).map(([key, t]) =>
+    h('label', { class: 'tpl' },
+      h('input', { type: 'radio', name: 'btpl', value: key, checked: key === tpl, onchange: () => { tpl = key; } }),
+      h('span', { class: 'tpl__name' }, t.label), h('span', { class: 'tpl__blurb' }, t.blurb.replace(/,? and a full world bible|, characters and places only/, '')))));
+  const create = () => {
+    const name = title.value.trim() || `Book ${series.books.length + 1}`;
+    let book;
+    change(() => { book = newBook(S.project, name, tpl, groupId); }, { render: false });
+    d.close();
+    go(`s/${S.slug}/b/${book.id}`);
+  };
+  title.addEventListener('keydown', (e) => { if (e.key === 'Enter') create(); });
+  const d = openDialog({
+    title: 'Add a book',
+    wide: true,
+    body: [
+      h('label', { class: 'field' }, h('span', { class: 'field__label' }, 'Title'), title),
+      h('div', { class: 'field' }, h('span', { class: 'field__label' }, 'Lay out the grid like'), opts),
+      standalone.length ? h('div', { class: 'field' }, h('span', { class: 'field__label' }, 'Or move in one of your projects'),
+        h('ul', { class: 'list' }, standalone.map((x) => h('li', { class: 'list__row' },
+          h('span', {}, x.title), h('span', { class: 'muted small' }, plural(x.counts.cards, 'card')),
+          h('span', { class: 'spacer' }),
+          h('button', { class: 'btn btn--sm', type: 'button', onclick: () => { d.close(); moveIntoSeries(x.slug, S.slug, groupId); } }, 'Move in'))))) : null,
+    ],
+    actions: [h('button', { class: 'btn', type: 'button', onclick: () => d.close() }, 'Cancel'), h('span', { class: 'spacer' }),
+      h('button', { class: 'btn btn--primary', type: 'button', onclick: create }, 'Create book')],
+  });
+}
+
+async function moveIntoSeriesDialog(projectSlug) {
+  let series;
+  try { series = (await store.list()).filter((x) => x.kind === 'series'); } catch (e) { return toast(e.message); }
+  if (!series.length) {
+    const ok = await choose({ title: 'No series yet', message: 'Create a series from the home screen first, then move this project into it.', choices: [{ label: 'OK', value: true }] });
+    return ok;
+  }
+  const d = openDialog({
+    title: 'Move into a series',
+    body: [
+      h('p', { class: 'muted' }, 'This project becomes a book in the series. Its entries join the shared world, and you can merge duplicates in the series’ World tab.'),
+      h('ul', { class: 'list' }, series.map((x) => h('li', { class: 'list__row' },
+        h('span', {}, x.title), h('span', { class: 'muted small' }, plural(x.counts.books || 0, 'book')),
+        h('span', { class: 'spacer' }),
+        h('button', { class: 'btn btn--sm', type: 'button', onclick: () => { d.close(); moveIntoSeries(projectSlug, x.slug, null); } }, 'Move here')))),
+    ],
+  });
+}
+
+async function moveIntoSeries(projectSlug, seriesSlug, groupId) {
+  try {
+    await saveNow();
+    const [pr, sr] = await Promise.all([store.read(projectSlug), store.read(seriesSlug)]);
+    if (pr.data.kind === 'series') return toast('A series can’t go inside another series.');
+    const series = prepare(sr.data);
+    const book = importProject(series, normalize(pr.data), groupId || series.groups[0].id);
+    await store.write(seriesSlug, series, sr.sha);
+    await store.remove(projectSlug);
+    unsaved.clear(scope(), projectSlug);
+    unsaved.clear(scope(), seriesSlug);
+    S.slug = null; S.project = null; S.dirty = false;
+    const dups = findDuplicates(series).length;
+    toast(dups ? `Moved in. ${plural(dups, 'possible duplicate')} to review in Shared world.` : 'Moved into the series.');
+    go(`s/${seriesSlug}/b/${book.id}`);
+  } catch (e) {
+    toast(e.kind === 'conflict' ? 'The series changed while moving. Try again.' : e.message);
+  }
+}
+
+function newSeriesDialog() {
+  const title = h('input', { class: 'input', placeholder: 'e.g. The Orchard Cycle', autocomplete: 'off' });
+  const err = h('p', { class: 'form-error', role: 'alert' });
+  const create = async () => {
+    const name = title.value.trim();
+    if (!name) { err.textContent = 'Give the series a name (you can change it later).'; title.focus(); return; }
+    btn.disabled = true;
+    try {
+      const existing = new Set((await store.list()).map((x) => x.slug));
+      let slug = slugify(name), n = 2;
+      while (existing.has(slug)) slug = `${slugify(name)}-${n++}`;
+      await store.write(slug, newSeries(name), null);
+      d.close();
+      go(`s/${slug}/books`);
+    } catch (e) { err.textContent = e.message; btn.disabled = false; }
+  };
+  title.addEventListener('keydown', (e) => { if (e.key === 'Enter') create(); });
+  const btn = h('button', { class: 'btn btn--primary', type: 'button', onclick: create }, 'Create series');
+  const d = openDialog({
+    title: 'New series',
+    body: [
+      h('p', { class: 'muted' }, 'A series holds several books that share one world: characters, places, magic and lore. You can add supporting series alongside the main one, and see every book on one timeline.'),
+      h('label', { class: 'field' }, h('span', { class: 'field__label' }, 'Series name'), title), err],
+    actions: [h('button', { class: 'btn', type: 'button', onclick: () => d.close() }, 'Cancel'), btn],
+  });
+}
+
+function viewSeriesSettings(series) {
+  const upd = (fn) => change(fn, { render: false });
+  const text = (label, get, set, { long = false, hint, placeholder } = {}) => h('label', { class: 'field' },
+    h('span', { class: 'field__label' }, label), hint ? h('span', { class: 'field__hint' }, hint) : null,
+    long ? autosize(h('textarea', { class: 'input', rows: 3, value: get(), placeholder, oninput: (e) => upd(() => set(e.target.value)) }))
+      : h('input', { class: 'input', value: get(), placeholder, oninput: (e) => upd(() => set(e.target.value)) }));
+  const lines = (label, hint, key) => h('label', { class: 'field' },
+    h('span', { class: 'field__label' }, label), h('span', { class: 'field__hint' }, hint),
+    autosize(h('textarea', { class: 'input', rows: 4, value: series.calendar[key].join('\n'),
+      oninput: (e) => upd(() => { const v = e.target.value.split('\n').map((x) => x.trim()).filter(Boolean); series.calendar[key] = v.length ? v : [key === 'years' ? 'Year 1' : '—']; }) })));
+  const placed = series.books.flatMap((b) => b.cards).filter((k) => k.when).length;
+  const sec = (id, title, blurb, ...kids) => h('section', { class: 'psec', id }, h('h2', { class: 'psec__title' }, title), blurb ? h('p', { class: 'muted small' }, blurb) : null, kids);
+
+  const typesWrap = h('div', { class: 'types' });
+  const drawTypes = () => {
+    clear(typesWrap);
+    for (const t of series.types) typesWrap.append(typeEditor(series, t, drawTypes));
+    typesWrap.append(h('button', { class: 'btn', type: 'button', onclick: () => newType(false, drawTypes) }, icon('plus'), ' New entry type'));
+  };
+  drawTypes();
+
+  return h('div', { class: 'wrap project' },
+    h('h1', { class: 'display' }, 'Series settings'),
+    sec('basics', 'Basics', null,
+      text('Name', () => series.title, (v) => { series.title = v; }),
+      text('Synopsis', () => series.synopsis, (v) => { series.synopsis = v; }, { long: true })),
+    sec('calendar', 'Story calendar', `How in-world time is divided on the timeline. ${placed ? `${plural(placed, 'scene')} already placed: renaming is safe, but removing or reordering lines moves those scenes.` : 'Rename freely: ages, reigns, seasons, stardates.'}`,
+      h('div', { class: 'row2' },
+        lines('Years (one per line)', 'Or eras, reigns, cycles…', 'years'),
+        lines('Each year is divided into', 'Seasons, months, chapters of time…', 'parts'))),
+    sec('notebook', 'Series notebook', 'The big picture: where the whole series is headed, rules that hold across books.',
+      autosize(h('textarea', { class: 'input notebook', rows: 6, value: series.notes, 'aria-label': 'Series notebook', oninput: (e) => upd(() => { series.notes = e.target.value; }) }))),
+    sec('types', 'Entry types', 'Shared by every book in the series.', typesWrap),
+    backupSection(),
+    sec('danger', 'Delete', null,
+      h('button', { class: 'btn btn--danger', type: 'button', onclick: async () => {
+        if (!(await confirmDanger(`Delete “${series.title}”?`, `The whole series goes: ${plural(series.books.length, 'book')} and the shared world. You can bring it back from “Restore a deleted project” on the home screen.`))) return;
+        try { await saveNow(); await store.remove(S.slug); unsaved.clear(scope(), S.slug); S.project = null; S.slug = null; go(''); }
+        catch (e) { toast(e.message); }
+      } }, icon('trash'), ' Delete series')));
+}
+
+// ======================================================================
+// Series timeline
+// ======================================================================
+
+const TL = { LANE: 70, ELANE: 44, TLANE: 58, CHIP: 128, STEP: 72 };
+const STAGE_LABEL = { pub: 'Published', written: 'Written', plan: 'Planned' };
+
+function viewTimeline(series) {
+  const T = S.tl;
+  const order = T.order;
+  const books = series.books;
+  if (!books.length) {
+    return h('div', { class: 'wrap empty' },
+      h('h1', { class: 'display' }, 'Nothing on the timeline yet'),
+      h('p', { class: 'muted' }, 'Add a book, or move one of your projects into this series. Every scene card shows up here.'),
+      h('a', { class: 'btn btn--primary', href: shref('books') }, icon('plus'), ' Add a book'));
+  }
+  const groupOf = (b) => series.groups.find((g) => g.id === b.groupId) || series.groups[0];
+  const colorOf = (b) => groupOf(b).color;
+  const laneBooks = series.groups.flatMap((g) => books.filter((b) => b.groupId === g.id));
+  const cal = series.calendar;
+  const Y = cal.years.length, PN = cal.parts.length;
+
+  // Every card, in reading order within its book.
+  const items = [];
+  for (const b of books) {
+    const ci = (id) => b.columns.findIndex((c) => c.id === id);
+    const ri = (id) => b.rows.findIndex((r) => r.id === id);
+    b.cards.map((k, i) => ({ k, i })).sort((x, y) => ci(x.k.colId) - ci(y.k.colId) || ri(x.k.rowId) - ri(y.k.rowId) || x.i - y.i)
+      .forEach(({ k }, n) => {
+        const col = b.columns.find((c) => c.id === k.colId);
+        const stage = col && col.canon ? 'pub' : ['drafted', 'editing', 'final'].includes(k.status) ? 'written' : 'plan';
+        const w = k.when;
+        const slot = w && w.y < Y && w.p < PN ? w.y * PN + w.p : null;
+        items.push({ k, b, n, stage, slot, x: null });
+      });
+  }
+  const byId = new Map(items.map((it) => [it.k.id, it]));
+
+  // Horizontal layout
+  let TW = 0;
+  const ruler1 = [], ruler2 = [], lines = [];
+  if (order === 'world') {
+    const counts = Array.from({ length: Y * PN }, () => 0);
+    for (const b of books) {
+      const per = {};
+      for (const it of items) if (it.b === b && it.slot != null) per[it.slot] = (per[it.slot] || 0) + 1;
+      for (const [sl, n] of Object.entries(per)) counts[sl] = Math.max(counts[sl], n);
+    }
+    const slotX = [];
+    let x = 0;
+    counts.forEach((n, sl) => { slotX[sl] = x; x += Math.max(150, n ? (n - 1) * TL.STEP + TL.CHIP + 32 : 150); });
+    TW = x;
+    const slotW = (sl) => (sl + 1 < slotX.length ? slotX[sl + 1] : TW) - slotX[sl];
+    for (let y = 0; y < Y; y++) {
+      const a = slotX[y * PN], e = y + 1 < Y ? slotX[(y + 1) * PN] : TW;
+      ruler1.push({ label: cal.years[y], left: a, width: e - a });
+      for (let q = 0; q < PN; q++) {
+        const sl = y * PN + q;
+        ruler2.push({ label: cal.parts[q], left: slotX[sl], width: slotW(sl) });
+        lines.push({ left: slotX[sl], strong: q === 0 });
+      }
+    }
+    for (const b of books) {
+      const mine = items.filter((it) => it.b === b && it.slot != null).sort((p, q) => p.slot - q.slot || p.n - q.n);
+      let last = null, j = 0;
+      for (const it of mine) { j = it.slot === last ? j + 1 : 0; last = it.slot; it.x = slotX[it.slot] + 16 + j * TL.STEP; }
+    }
+  } else {
+    let off = 0;
+    books.forEach((b, bi) => {
+      const mine = items.filter((it) => it.b === b).sort((p, q) => p.n - q.n);
+      mine.forEach((it, j) => { it.x = off + 24 + j * TL.STEP; });
+      const w = Math.max(220, 24 + Math.max(0, mine.length - 1) * TL.STEP + TL.CHIP + 28);
+      ruler1.push({ label: `${bi + 1}. ${b.title || 'Untitled book'}`, left: off, width: w });
+      ruler2.push({ label: groupOf(b).title, left: off, width: w });
+      lines.push({ left: off, strong: true });
+      off += w;
+    });
+    TW = off;
+  }
+  const shown = items.filter((it) => it.x != null);
+  const laneIndex = new Map(laneBooks.map((b, i) => [b, i]));
+  for (const b of laneBooks) {
+    shown.filter((it) => it.b === b).sort((p, q) => p.x - q.x).forEach((it, i) => { it.top = i % 2 ? 37 : 8; });
+  }
+
+  // Tracing
+  const tr = T.trace;
+  const traceCard = tr && tr.startsWith('t:') ? findCard(tr.slice(2)) : null;
+  const hit = (it) => {
+    if (!tr) return true;
+    if (tr.startsWith('e:')) return it.k.entityIds.includes(tr.slice(2));
+    return traceCard && (it.k === traceCard || it.k.id === traceCard.payoffId);
+  };
+  const setTrace = (v) => { T.trace = T.trace === v ? null : v; render(); };
+
+  // ---------- toolbar ----------
+  const seg = (v, label) => h('button', { class: 'tl-seg__btn' + (order === v ? ' is-on' : ''), type: 'button', 'aria-pressed': String(order === v), onclick: () => { T.order = v; render(); } }, label);
+  const toggle = (key, label) => h('button', { class: 'tl-toggle' + (T.hide[key] ? '' : ' is-on'), type: 'button', 'aria-pressed': String(!T.hide[key]),
+    onclick: () => { T.hide = { ...T.hide, [key]: !T.hide[key] }; render(); } }, label);
+  const usedTypes = series.types.filter((t) => series.entities.some((e) => e.typeId === t.id && shown.some((it) => it.k.entityIds.includes(e.id))));
+  const unplaced = order === 'world' ? items.filter((it) => it.slot == null) : [];
+
+  const toolbar = h('div', { class: 'tl-bar' },
+    h('div', { class: 'tl-seg', role: 'group', 'aria-label': 'Order' }, seg('world', 'In-world time'), seg('reading', 'Reading order')),
+    h('div', { class: 'tl-toggles', role: 'group', 'aria-label': 'Show' },
+      h('span', { class: 'tl-label' }, 'Show'),
+      toggle('books', 'Books'), usedTypes.map((t) => toggle(t.id, t.name)), toggle('threads', 'Threads')),
+    h('span', { class: 'spacer' }),
+    h('div', { class: 'tl-legend' },
+      series.groups.map((g) => h('span', { class: 'tl-legend__i' }, h('span', { class: 'tl-sw', style: { background: g.color } }), g.title)),
+      h('span', { class: 'tl-legend__sep' }),
+      h('span', { class: 'tl-legend__i' }, h('span', { class: 'tl-sw tl-sw--pub' }), 'Published'),
+      h('span', { class: 'tl-legend__i' }, h('span', { class: 'tl-sw tl-sw--written' }), 'Written'),
+      h('span', { class: 'tl-legend__i' }, h('span', { class: 'tl-sw tl-sw--plan' }), 'Planned')));
+
+  // ---------- trace strip ----------
+  let strip;
+  if (tr) {
+    const hits = shown.filter(hit).sort((p, q) => p.x - q.x);
+    const allHits = items.filter(hit);
+    const inBooks = [...new Set(allHits.map((it) => it.b))];
+    const inLines = new Set(inBooks.map((b) => groupOf(b).id));
+    const absent = books.filter((b) => !inBooks.includes(b)).map((b) => b.title);
+    let name = '', kind = '';
+    if (tr.startsWith('e:')) { const e = entity(tr.slice(2)); name = e ? e.name || 'Unnamed' : 'Deleted entry'; kind = e ? typeOf(e)?.singular || '' : ''; }
+    else { name = traceCard ? traceCard.title || 'Untitled scene' : 'Thread'; kind = 'Setup and payoff'; }
+    strip = h('div', { class: 'tl-trace' },
+      h('span', { class: 'tl-trace__tag' }, 'Tracing'),
+      h('span', { class: 'tl-trace__name' }, name),
+      kind ? h('span', { class: 'muted' }, kind) : null,
+      h('span', { class: 'tl-trace__sep' }),
+      h('strong', {}, `${plural(allHits.length, 'scene')} · ${plural(inBooks.length, 'book')} · ${inLines.size} series`),
+      hits.length ? h('span', { class: 'muted' }, `${order === 'world' ? 'Earliest' : 'First read'}: “${hits[0].k.title || 'Untitled scene'}”, ${hits[0].b.title}`) : null,
+      tr.startsWith('e:') && absent.length ? h('span', { class: 'tl-trace__absent' }, 'Not in ' + absent.join(', ')) : null,
+      h('span', { class: 'spacer' }),
+      tr.startsWith('e:') ? h('a', { class: 'btn btn--sm', href: shref('e/' + tr.slice(2)) }, 'Open entry') : null,
+      h('button', { class: 'btn btn--sm', type: 'button', onclick: () => setTrace(null) }, 'Stop tracing'));
+  } else {
+    strip = h('p', { class: 'tl-hint' }, 'Click a character, place or thread on the left to trace it through every book. Click a scene to edit it.');
+  }
+
+  // ---------- the timeline ----------
+  const labelCell = (cls, ...kids) => h('div', { class: 'tl-lab ' + (cls || '') }, kids);
+  const track = (height, ...kids) => h('div', { class: 'tl-track', style: { width: TW + 'px', height: height + 'px' } }, kids);
+  const sectionHead = (title) => h('div', { class: 'tl-row tl-row--head' }, labelCell('tl-lab--head', title));
+
+  const gridLayer = h('div', { class: 'tl-gridlayer', style: { width: TW + 'px' } },
+    lines.map((l) => h('span', { class: 'tl-line' + (l.strong ? ' is-strong' : ''), style: { left: l.left + 'px' } })));
+  if (order === 'reading') {
+    const pubs = shown.filter((it) => it.stage === 'pub').sort((p, q) => p.x - q.x);
+    if (pubs.length) {
+      const cx = pubs[pubs.length - 1].x + TL.CHIP - 2;
+      gridLayer.append(h('span', { class: 'tl-canon', style: { left: cx + 'px' } }), h('span', { class: 'tl-canon__tag', style: { left: cx + 6 + 'px' } }, 'Published so far'));
+    }
+  }
+
+  const ruler = h('div', { class: 'tl-row tl-row--ruler' },
+    labelCell('tl-lab--ruler', order === 'world' ? 'In-world time' : 'Reading order'),
+    track(64,
+      ruler1.map((r) => h('span', { class: 'tl-r1', style: { left: r.left + 'px', width: r.width + 'px' } }, r.label)),
+      ruler2.map((r) => h('span', { class: 'tl-r2', style: { left: r.left + 'px', width: r.width + 'px' } }, r.label))));
+
+  const chip = (it) => {
+    const c = colorOf(it.b);
+    const ci = cardInfo(it.k);
+    const w = it.k.when;
+    const tip = `${it.b.title} · ${ci.b.labels.column} ${ci.num} · ${it.k.title || 'Untitled scene'}` + (w && order === 'world' ? ` · ${cal.years[w.y]}, ${cal.parts[w.p]}${w.day ? ' (' + w.day + ')' : ''}` : '') + ` · ${STAGE_LABEL[it.stage]}`;
+    return h('button', { class: `tl-chip tl-chip--${it.stage}` + (hit(it) ? '' : ' is-dim'), type: 'button', title: tip,
+      style: { left: it.x - 9 + 'px', top: it.top + 'px', '--c': c }, onclick: () => openCard(it.k.id) },
+    h('span', { class: 'tl-chip__dot st-' + it.k.status }),
+    h('span', { class: 'tl-chip__t' }, it.k.title || 'Untitled scene'),
+    ((it.k.links || []).length || items.some((o) => (o.k.links || []).some((l) => l.id === it.k.id))) && order !== 'world' ? icon('link', 'tl-chip__ico') : null);
+  };
+
+  const parts = [gridLayer, ruler];
+
+  if (!T.hide.books) {
+    parts.push(sectionHead('Books'));
+    const wrap = h('div', { class: 'tl-books' });
+    for (const b of laneBooks) {
+      const mine = shown.filter((it) => it.b === b);
+      const xs = mine.map((it) => it.x);
+      const un = order === 'world' ? items.filter((it) => it.b === b && it.slot == null).length : 0;
+      wrap.append(h('div', { class: 'tl-row', style: { height: TL.LANE + 'px' } },
+        labelCell('tl-lab--book',
+          h('span', { class: 'tl-lab__bar', style: { background: colorOf(b) } }),
+          h('a', { class: 'tl-lab__text', href: href(`s/${encodeURIComponent(S.slug)}/b/${encodeURIComponent(b.id)}`), title: 'Open this book’s grid' },
+            h('span', { class: 'tl-lab__title' }, b.title || 'Untitled book'),
+            h('span', { class: 'tl-lab__meta' }, `${groupOf(b).title}${un ? ` · ${un} not placed` : ''}`))),
+        track(TL.LANE,
+          xs.length ? h('span', { class: 'tl-band', style: { left: Math.min(...xs) - 16 + 'px', width: Math.max(...xs) - Math.min(...xs) + TL.CHIP + 14 + 'px', '--c': colorOf(b) } }) : null,
+          mine.map(chip))));
+    }
+    // Linked scenes, joined across books
+    if (order === 'world') {
+      const svgNS = 'http://www.w3.org/2000/svg';
+      const svg = document.createElementNS(svgNS, 'svg');
+      svg.setAttribute('class', 'tl-links');
+      svg.setAttribute('width', TW);
+      svg.setAttribute('height', laneBooks.length * TL.LANE);
+      svg.setAttribute('aria-hidden', 'true');
+      const tags = [];
+      const seen = new Set();
+      for (const it of shown) {
+        for (const l of it.k.links || []) {
+          const o = byId.get(l.id);
+          if (!o || o.x == null) continue;
+          const key = [it.k.id, o.k.id].sort().join('|');
+          if (seen.has(key)) continue;
+          seen.add(key);
+          let [a, z] = [it, o];
+          if (laneIndex.get(a.b) > laneIndex.get(z.b)) [a, z] = [z, a];
+          const same = laneIndex.get(a.b) === laneIndex.get(z.b);
+          const x1 = a.x, y1 = laneIndex.get(a.b) * TL.LANE + a.top + (same ? 13 : 26);
+          const x2 = z.x, y2 = laneIndex.get(z.b) * TL.LANE + z.top + (same ? 13 : 0);
+          const line = document.createElementNS(svgNS, 'line');
+          for (const [k2, v] of Object.entries({ x1, y1, x2, y2 })) line.setAttribute(k2, v);
+          line.setAttribute('class', 'tl-link' + (hit(it) || hit(o) ? '' : ' is-dim'));
+          svg.append(line);
+          if (!same) tags.push(h('span', { class: 'tl-link__tag', style: { left: (x1 + x2) / 2 + 8 + 'px', top: (y1 + y2) / 2 - 10 + 'px' } }, (LINK_KINDS.find(([v]) => v === l.kind) || ['', 'Linked'])[1]));
+        }
+      }
+      const overlay = h('div', { class: 'tl-overlay', style: { width: TW + 'px' } }, tags);
+      overlay.prepend(svg);
+      wrap.append(overlay);
+    }
+    parts.push(wrap);
+  }
+
+  // Characters, places and every other entry type
+  for (const t of usedTypes) {
+    if (T.hide[t.id]) continue;
+    const ents = series.entities.filter((e) => e.typeId === t.id)
+      .map((e) => ({ e, its: shown.filter((it) => it.k.entityIds.includes(e.id)).sort((p, q) => p.x - q.x) }))
+      .filter((x) => x.its.length)
+      .sort((a, b) => a.its[0].x - b.its[0].x);
+    if (!ents.length) continue;
+    parts.push(sectionHead(t.name));
+    for (const { e, its } of ents) {
+      const key = 'e:' + e.id;
+      const on = tr === key;
+      const segs = [];
+      for (const b of books) {
+        const m = its.filter((it) => it.b === b);
+        if (m.length > 1) segs.push(h('span', { class: 'tl-seg-rail', style: { left: m[0].x + 'px', width: m[m.length - 1].x - m[0].x + 'px', background: colorOf(b) } }));
+      }
+      const initials = (e.name || '?').split(/\s+/).filter(Boolean).slice(0, 2).map((w) => w[0]).join('').toUpperCase();
+      parts.push(h('div', { class: 'tl-row', style: { height: TL.ELANE + 'px' } },
+        h('button', { class: 'tl-lab tl-lab--ent' + (on ? ' is-on' : ''), type: 'button', 'aria-pressed': String(on), title: on ? 'Stop tracing' : 'Trace through every book', onclick: () => setTrace(key) },
+          h('span', { class: 'tl-ava', style: { '--c': t.color } }, initials),
+          h('span', { class: 'tl-lab__name' }, e.name || 'Unnamed'),
+          h('span', { class: 'tl-lab__count' }, String(its.length))),
+        h('div', { class: 'tl-track' + (tr && !on ? ' is-dim' : ''), style: { width: TW + 'px', height: TL.ELANE + 'px' } },
+          segs,
+          its.map((it) => h('span', { class: 'tl-dot', title: `${it.b.title} · ${it.k.title || 'Untitled scene'}`, style: { left: it.x - 6 + 'px', background: colorOf(it.b) } })))));
+    }
+  }
+
+  // Threads: setups and their payoffs, across books
+  if (!T.hide.threads) {
+    const setups = shown.filter((it) => it.k.setup).sort((p, q) => p.x - q.x);
+    if (setups.length) {
+      parts.push(sectionHead('Threads and plot points'));
+      for (const it of setups) {
+        const key = 't:' + it.k.id;
+        const on = tr === key;
+        const po = it.k.payoffId ? byId.get(it.k.payoffId) : null;
+        const marks = [], extra = [];
+        const mark = (m, kind) => h('button', { class: 'tl-mark tl-mark--' + kind, type: 'button', title: `${kind === 'payoff' ? 'Pays off' : 'Set up'}: ${m.k.title || 'Untitled scene'} (${m.b.title})`,
+          style: { left: m.x - 9 + 'px', background: colorOf(m.b) }, onclick: () => openCard(m.k.id) }, icon(kind === 'payoff' ? 'check' : 'flag'));
+        marks.push(mark(it, 'setup'), h('span', { class: 'tl-mark__lab', style: { left: it.x - 9 + 'px' } }, 'Set up'));
+        if (po && po.x != null) {
+          const a = Math.min(it.x, po.x), z = Math.max(it.x, po.x);
+          extra.push(h('span', { class: 'tl-rail', style: { left: a + 'px', width: z - a + 'px' } }));
+          if (po.b !== it.b) extra.push(h('span', { class: 'tl-rail__note', style: { left: a + 70 + 'px' } }, `Crosses into ${po.b.title}`));
+          if (po.x < it.x) extra.push(h('span', { class: 'tl-rail__note tl-rail__note--warn', style: { left: a + 70 + 'px' } }, 'Pays off before it’s set up'));
+          marks.push(mark(po, 'payoff'), h('span', { class: 'tl-mark__lab', style: { left: po.x - 30 + 'px' } }, 'Pays off'));
+        } else if (po) {
+          extra.push(h('span', { class: 'tl-rail tl-rail--open', style: { left: it.x + 'px', width: '160px' } }),
+            h('span', { class: 'tl-rail__note', style: { left: it.x + 70 + 'px' } }, `Pays off in ${po.b.title} (not placed yet)`));
+        } else {
+          extra.push(h('span', { class: 'tl-rail tl-rail--open', style: { left: it.x + 'px', width: '160px' } }),
+            h('span', { class: 'tl-rail__note tl-rail__note--warn', style: { left: it.x + 70 + 'px' } }, 'Not paid off yet'));
+        }
+        parts.push(h('div', { class: 'tl-row', style: { height: TL.TLANE + 'px' } },
+          h('button', { class: 'tl-lab tl-lab--ent' + (on ? ' is-on' : ''), type: 'button', 'aria-pressed': String(on), title: on ? 'Stop tracing' : 'Trace this thread', onclick: () => setTrace(key) },
+            icon('flag', 'tl-lab__flag'), h('span', { class: 'tl-lab__name' }, it.k.title || 'Untitled scene')),
+          h('div', { class: 'tl-track' + (tr && !on ? ' is-dim' : ''), style: { width: TW + 'px', height: TL.TLANE + 'px' } }, extra, marks)));
+      }
+    }
+  }
+
+  const box = h('div', { class: 'tl-box' }, h('div', { class: 'tl-inner', style: { width: `calc(var(--labw) + ${TW + 24}px)` } }, parts));
+
+  // Scenes without a time yet
+  let tray = null;
+  if (unplaced.length) {
+    tray = h('section', { class: 'tl-tray' },
+      h('h2', { class: 'tl-tray__title' }, `Not placed in time yet (${unplaced.length})`),
+      h('p', { class: 'muted small' }, 'Open a scene and set “When in the story” to put it on the in-world timeline. They all show in Reading order already.'),
+      laneBooks.map((b) => {
+        const m = unplaced.filter((it) => it.b === b);
+        return m.length ? h('div', { class: 'tl-tray__book' },
+          h('span', { class: 'tl-tray__name', style: { '--c': colorOf(b) } }, b.title),
+          h('div', { class: 'tl-tray__chips' }, m.map((it) => h('button', { class: `tl-chip tl-chip--static tl-chip--${it.stage}`, type: 'button', style: { '--c': colorOf(b) }, onclick: () => openCard(it.k.id) },
+            h('span', { class: 'tl-chip__dot st-' + it.k.status }), h('span', { class: 'tl-chip__t' }, it.k.title || 'Untitled scene'))))) : null;
+      }));
+  }
+
+  return h('div', { class: 'tl' },
+    h('div', { class: 'tl-head' },
+      h('div', {},
+        h('h1', { class: 'display' }, 'Series timeline'),
+        h('p', { class: 'muted' }, order === 'world' ? 'Every book, placed by when things happen in the story.' : 'Every book, in the order readers meet it.')),
+      h('span', { class: 'spacer' }),
+      h('a', { class: 'btn', href: shref('books') }, icon('plus'), ' Book')),
+    toolbar, strip,
+    order === 'world' && !shown.length ? h('p', { class: 'tl-hint tl-hint--warn' }, 'No scenes are placed in time yet. Open any scene and set “When in the story”, or switch to Reading order.') : null,
+    box, tray);
 }
 
 boot();
