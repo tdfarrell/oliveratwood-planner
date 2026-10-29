@@ -782,3 +782,68 @@ a.chip:hover { background: color-mix(in srgb, var(--c, var(--rule)) 24%, var(--s
 .tl-tray__chips .tl-chip { width: auto; max-width: 15rem; }
 @media (max-width: 640px) { .tl-tray__name { width: 100%; } .tl-trace__sep { display: none; } }
 .tab { white-space: nowrap; }
+
+/* ---------- Word counts ---------- */
+.words { font-size: .78rem; font-weight: 600; color: var(--ink-2); white-space: nowrap; font-variant-numeric: tabular-nums; }
+.words.is-met { color: var(--ok); }
+.words.is-met::after { content: " ✓"; }
+.colhead__words { display: block; margin-top: .05rem; }
+.acthead__words { font-weight: 600; }
+.rowhead__words { margin-top: .1rem; }
+.card__words { display: flex; justify-content: flex-end; margin-top: .4rem; }
+.card__words .words { font-size: .74rem; color: var(--ink); }
+.card__words .words.is-met { color: var(--ok); }
+.grid.is-compact .card__words { margin-top: .15rem; }
+
+.wbox { background: var(--sheet-2); border: 1px solid var(--rule-soft); border-radius: 8px; padding: .8rem 1rem .6rem; margin: 0 0 1rem; }
+.wbox__row { display: flex; gap: .8rem; flex-wrap: wrap; }
+.wbox__row .field { margin-bottom: .5rem; }
+.input--words { font-size: 1.15rem; font-weight: 600; }
+.input--num { max-width: 10rem; font-variant-numeric: tabular-nums; }
+.wbox__totals { margin: 0; font-size: .85rem; color: var(--ink-2); }
+.wbox__totals strong { color: var(--ink); }
+.field--goal .input--num { max-width: 12rem; }
+
+.wc { position: relative; }
+.wc__pill {
+  display: inline-flex; align-items: center; gap: .45rem; min-height: 2.2rem; padding: 0 .75rem;
+  border-radius: 99px; border: 1px solid var(--rule); background: var(--sheet); cursor: pointer; white-space: nowrap; font-size: .9rem;
+}
+.wc__pill:hover, .wc__pill.is-open { border-color: var(--ink); }
+.wc__n { font-variant-numeric: tabular-nums; }
+.wc__unit { color: var(--ink-2); }
+.wc__bar { width: 3.5rem; height: 6px; border-radius: 3px; background: var(--sheet-2); box-shadow: inset 0 0 0 1px var(--rule-soft); overflow: hidden; display: inline-flex; }
+.wc__bar span { background: var(--accent); }
+.wc__pct { font-size: .78rem; color: var(--ink-2); }
+.wcp {
+  position: absolute; right: 0; top: calc(100% + .5rem); z-index: 60; width: min(22rem, calc(100vw - 2rem));
+  max-height: calc(100vh - 6rem); overflow: auto; box-sizing: border-box; padding: 1rem 1.1rem;
+  background: var(--sheet); border-radius: 10px; box-shadow: var(--shadow-lift); border: 1px solid var(--rule-soft);
+  display: flex; flex-direction: column; gap: .7rem; text-align: left;
+}
+.wcp__head { display: flex; align-items: baseline; gap: .45rem; }
+.wcp__total { font-family: var(--display); font-size: 2.1rem; line-height: 1; font-variant-numeric: tabular-nums; }
+.wcp__goal { display: flex; flex-direction: column; gap: .35rem; }
+.wcp__bar { height: 10px; border-radius: 5px; background: var(--sheet-2); box-shadow: inset 0 0 0 1px var(--rule-soft); overflow: hidden; display: flex; gap: 2px; }
+.wcp__bar span { background: var(--s); }
+.wcp__h { margin: .2rem 0 0; font-size: .7rem; font-weight: 600; letter-spacing: .08em; text-transform: uppercase; color: var(--ink-2); border-top: 1px solid var(--rule-soft); padding-top: .7rem; }
+.wcp__list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: .2rem; }
+.wcp__row { display: flex; align-items: center; gap: .6rem; font-size: .9rem; }
+.wcp__row--act { margin-top: .35rem; font-weight: 600; }
+.wcp__row--act + .wcp__row:not(.wcp__row--act) { }
+.wcp__label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.wcp__num { font-size: .88rem; color: var(--ink); }
+.wcp__pub { font-size: .75rem; color: var(--accent-text); }
+.wcp__foot { margin: 0; font-size: .86rem; color: var(--ink-2); border-top: 1px solid var(--rule-soft); padding-top: .6rem; }
+.wcp__foot strong { color: var(--ink); }
+.wcp__empty { margin: 0; }
+@media (max-width: 640px) {
+  .wc__unit, .wc__bar { display: none; }
+  .wcp { position: fixed; left: 1rem; right: 1rem; top: 6.5rem; width: auto; }
+}
+.search__input { width: 11rem; }
+@media (max-width: 1520px) { .wc__unit { display: none; } .top__right { gap: .6rem; } }
+@media (max-width: 1280px) { .wc__bar { display: none; } }
+@media (max-width: 1520px) { .search__input { width: 9rem; } }
+@media (max-width: 1360px) { .tabs .tab .ico { display: none; } .pill--series { display: none; } }
+@media (max-width: 1120px) { .search__input { width: 7rem; } .top__book { max-width: 9rem; } }

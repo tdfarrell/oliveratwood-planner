@@ -42,6 +42,23 @@ function cardInfo(k) {
   return { b, i, num: i >= 0 ? numeral(b, i) : '?', row: b.rows.find((r) => r.id === k.rowId) };
 }
 const otherBook = (b) => isSeries() && b !== P();
+
+// ---------- Word counts ----------
+const fmtN = (n) => Number(n || 0).toLocaleString('en-US');
+const wordsOf = (cards) => cards.reduce((a, k) => a + (Number(k.words) || 0), 0);
+const parseNum = (v) => { const d = String(v).replace(/[^\d]/g, ''); return d ? Math.min(parseInt(d, 10), 99999999) : null; };
+// "1,240 words", or "1,240 / 2,000" when there's a goal.
+const wordText = (n, goal) => (goal ? `${fmtN(n)} / ${fmtN(goal)}` : n ? `${fmtN(n)} words` : '');
+const wordClass = (n, goal) => 'words' + (goal && n >= goal ? ' is-met' : '');
+function numberInput(get, set, attrs = {}) {
+  const el = h('input', { class: 'input input--num', type: 'text', inputmode: 'numeric', autocomplete: 'off', value: get() ? fmtN(get()) : '', ...attrs,
+    oninput: (e) => set(parseNum(e.target.value)),
+    onblur: (e) => { e.target.value = get() ? fmtN(get()) : ''; } });
+  return el;
+}
+const goalField = (label, get, set, hint) => h('label', { class: 'field field--goal' },
+  h('span', { class: 'field__label' }, label), hint ? h('span', { class: 'field__hint' }, hint) : null,
+  numberInput(get, set, { placeholder: 'No goal' }));
 const entity = (id) => P().entities.find((e) => e.id === id);
 const typeOf = (e) => e && P().types.find((t) => t.id === e.typeId);
 const colIndex = (id) => P().columns.findIndex((c) => c.id === id);
@@ -490,13 +507,78 @@ function render() {
       h('nav', { class: 'tabs', 'aria-label': 'Views' }, tabs.map(([id, label, ic, url]) =>
         h('a', { class: 'tab' + (activeTab === id ? ' is-on' : ''), href: url, 'aria-current': activeTab === id ? 'page' : null },
           icon(ic), h('span', {}, label)))),
-      h('div', { class: 'top__right' }, searchBox(p),
+      h('div', { class: 'top__right' }, wordPill(), searchBox(p),
         h('button', { class: 'iconbtn', type: 'button', title: 'Name generator', 'aria-label': 'Name generator', onclick: () => nameDialog({ kind: S.route.tab === 'world' || S.route.tab === 'e' ? kindForType((p.types.find((t) => t.id === S.route.id) || typeOf(entity(S.route.id)) || {}).name) : undefined, createType: S.route.tab === 'world' ? S.route.id : null }) }, icon('dice')),
         h('span', { id: 'save-status', class: 'status', 'aria-live': 'polite' }))),
     h('main', { class: 'main main--' + activeTab }, main));
   clear(root).append(shell);
   setStatus(S.status, S.statusMsg);
 }
+
+// ---------- Running word total (top bar) ----------
+
+function wordPill() {
+  const series = isSeries() ? S.project : null;
+  const top = series && !S.bookId;
+  const scope = top ? series : P();
+  const cards = top ? scopeCards() : scope.cards;
+  const total = wordsOf(cards);
+  const goal = scope.wordGoal;
+  const pct = goal ? Math.min(100, Math.round((total / goal) * 100)) : 0;
+  const wrap = h('div', { class: 'wc' });
+  const btn = h('button', { class: 'wc__pill' + (S.wcOpen ? ' is-open' : ''), type: 'button', 'aria-expanded': String(!!S.wcOpen), 'aria-haspopup': 'dialog',
+    title: 'Word count', onclick: (e) => { e.stopPropagation(); S.wcOpen = !S.wcOpen; render(); } },
+  icon('words'),
+  h('strong', { class: 'wc__n' }, fmtN(total)), h('span', { class: 'wc__unit' }, 'words'),
+  goal ? h('span', { class: 'wc__bar', 'aria-hidden': 'true' }, h('span', { style: { width: pct + '%' } })) : null,
+  goal ? h('span', { class: 'wc__pct' }, pct + '%') : null);
+  wrap.append(btn);
+  if (S.wcOpen) wrap.append(wordPanel(top, scope, cards, total, goal, pct));
+  return wrap;
+}
+
+function wordPanel(top, scope, cards, total, goal, pct) {
+  const series = isSeries() ? S.project : null;
+  const byStatus = STATUSES.map(([v, l]) => [v, l, wordsOf(cards.filter((k) => k.status === v))]).filter(([, , n]) => n);
+  const settingsHref = top ? shref('settings') : phref('project');
+  const row = (label, n, g, extra) => h('li', { class: 'wcp__row' }, h('span', { class: 'wcp__label' }, label, extra || null), h('span', { class: wordClass(n, g) + ' wcp__num' }, g ? wordText(n, g) : n ? fmtN(n) : '—'));
+  let parts;
+  if (top) {
+    parts = [h('h3', { class: 'wcp__h' }, 'By book'), h('ul', { class: 'wcp__list' }, series.books.map((b, i) => row(`${i + 1}. ${b.title || 'Untitled book'}`, wordsOf(b.cards), b.wordGoal)))];
+  } else {
+    const p = scope;
+    const colRow = (c) => { const i = p.columns.indexOf(c); return row(`${numeral(p, i)}${c.title ? ' · ' + c.title : ''}`, wordsOf(p.cards.filter((k) => k.colId === c.id)), c.wordGoal, c.canon ? h('span', { class: 'wcp__pub' }, ' published') : null); };
+    if (actsOn(p)) {
+      parts = [h('h3', { class: 'wcp__h' }, `By ${lower(p.labels.act)} and ${lower(p.labels.column)}`), h('ul', { class: 'wcp__list' }, p.acts.map((a, ai) => {
+        const cs = p.columns.filter((c) => c.actId === a.id);
+        const ids = new Set(cs.map((c) => c.id));
+        return [h('li', { class: 'wcp__row wcp__row--act' }, h('span', { class: 'wcp__label' }, `${p.labels.act} ${roman(ai + 1)}${a.title ? ': ' + a.title : ''}`),
+          h('span', { class: wordClass(wordsOf(p.cards.filter((k) => ids.has(k.colId))), a.wordGoal) + ' wcp__num' }, wordText(wordsOf(p.cards.filter((k) => ids.has(k.colId))), a.wordGoal) || '—')), cs.map(colRow)];
+      }))];
+    } else {
+      parts = [h('h3', { class: 'wcp__h' }, `By ${lower(p.labels.column)}`), h('ul', { class: 'wcp__list' }, p.columns.map(colRow))];
+    }
+  }
+  const pubCards = top ? series.books.flatMap((b) => b.cards.filter((k) => b.columns.find((c) => c.id === k.colId)?.canon)) : scope.cards.filter((k) => scope.columns.find((c) => c.id === k.colId)?.canon);
+  const pubWords = wordsOf(pubCards);
+  const panel = h('div', { class: 'wcp', role: 'dialog', 'aria-label': 'Word count', onclick: (e) => e.stopPropagation() },
+    h('div', { class: 'wcp__head' },
+      h('span', { class: 'wcp__total' }, fmtN(total)), h('span', { class: 'muted' }, 'words'),
+      h('span', { class: 'spacer' }),
+      h('a', { class: 'small', href: settingsHref, onclick: () => { S.wcOpen = false; } }, goal ? 'Edit goal' : 'Set a goal')),
+    goal ? h('div', { class: 'wcp__goal' },
+      h('span', { class: 'wcp__bar' }, byStatus.map(([v, , n]) => h('span', { class: 'st-' + v, style: { width: Math.min(100, (n / goal) * 100) + '%' } }))),
+      h('span', { class: 'muted small' }, total >= goal ? `Goal of ${fmtN(goal)} reached` : `${pct}% of your ${fmtN(goal)}-word goal · ${fmtN(goal - total)} to go`)) : null,
+    byStatus.length ? h('ul', { class: 'wcp__list' }, byStatus.map(([v, l, n]) => h('li', { class: 'wcp__row' }, h('span', { class: 'wcp__label' }, h('i', { class: 'legend__dot st-' + v }), ' ', l), h('span', { class: 'wcp__num' }, fmtN(n)))))
+      : h('p', { class: 'muted small wcp__empty' }, 'No words counted yet. Add a word count to any scene card.'),
+    parts,
+    series && !top ? h('p', { class: 'wcp__foot' }, 'Whole series: ', h('strong', {}, wordText(wordsOf(scopeCards()), series.wordGoal) || '0 words')) : null,
+    pubWords ? h('p', { class: 'wcp__foot' }, 'Published so far: ', h('strong', {}, `${fmtN(pubWords)} words`)) : null);
+  return panel;
+}
+
+document.addEventListener('click', () => { if (S.wcOpen) { S.wcOpen = false; if (S.project) render(); } });
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && S.wcOpen && !document.querySelector('dialog[open]')) { S.wcOpen = false; render(); } });
 
 // ---------- Search ----------
 
@@ -616,6 +698,7 @@ function colHeader(p, c, i) {
     h('span', { class: 'colhead__meta' },
       c.canon ? h('span', { class: 'pill pill--canon' }, icon('lock'), 'Published') : null,
       h('span', {}, plural(n, 'card'))),
+    (() => { const w = wordsOf(p.cards.filter((k) => k.colId === c.id)); return w || c.wordGoal ? h('span', { class: wordClass(w, c.wordGoal) + ' colhead__words' }, wordText(w, c.wordGoal)) : null; })(),
     h('span', { class: 'statusbar' + (n ? '' : ' statusbar--empty'), title: STATUSES.map(([v, l]) => [l, p.cards.filter((k) => k.colId === c.id && k.status === v).length]).filter(([, x]) => x).map(([l, x]) => `${l}: ${x}`).join(' · ') },
       STATUSES.map(([v]) => {
         const x = p.cards.filter((k) => k.colId === c.id && k.status === v).length;
@@ -635,6 +718,7 @@ function actHeader(p, a, i) {
   h('span', { class: 'acthead__num' }, `${p.labels.act} ${roman(i + 1)}`),
   a.title ? h('span', { class: 'acthead__title' }, a.title) : null,
   h('span', { class: 'spacer' }),
+  (() => { const ids = new Set(cols.map((c) => c.id)); const w = wordsOf(p.cards.filter((k) => ids.has(k.colId))); return w || a.wordGoal ? h('span', { class: wordClass(w, a.wordGoal) + ' acthead__words' }, wordText(w, a.wordGoal)) : null; })(),
   cols.length ? h('span', { class: 'acthead__range' }, first === last ? `${p.labels.column} ${numeral(p, first)}` : `${p.labels.column}s ${numeral(p, first)}–${numeral(p, last)}`) : null);
   dragSource(el, 'act', a.id);
   dropTarget(el, { act: 'x', col: 'into' }, (it, after) => {
@@ -746,7 +830,8 @@ function rowHeader(p, r) {
   icon('grip', 'grip'),
   h('span', { class: 'rowhead__text' },
     h('span', { class: 'rowhead__title' }, r.title || 'Untitled'),
-    h('span', { class: 'rowhead__meta' }, plural(n, 'card'))));
+    h('span', { class: 'rowhead__meta' }, plural(n, 'card')),
+    (() => { const w = wordsOf(p.cards.filter((k) => k.rowId === r.id)); return w ? h('span', { class: 'words rowhead__words' }, `${fmtN(w)} words`) : null; })()));
   dragSource(el, 'row', r.id);
   dropTarget(el, { row: 'y' }, (it, after) => moveRow(it.id, r.id, after));
   return el;
@@ -812,7 +897,8 @@ function cardEl(p, k, r) {
     payoffOf ? h('span', { class: 'flag flag--done' }, icon('check'), `Payoff from ${where(payoffOf)}`) : null) : null,
   !S.compact && ents.length ? h('div', { class: 'card__chips' },
     ents.slice(0, 6).map((e) => h('span', { class: 'chip chip--sm', style: { '--c': typeOf(e)?.color } }, e.name || 'Unnamed')),
-    ents.length > 6 ? h('span', { class: 'chip chip--sm chip--more' }, `+${ents.length - 6}`) : null) : null);
+    ents.length > 6 ? h('span', { class: 'chip chip--sm chip--more' }, `+${ents.length - 6}`) : null) : null,
+  k.words || k.wordGoal ? h('div', { class: 'card__words' }, h('span', { class: wordClass(k.words || 0, k.wordGoal) }, k.words || k.wordGoal ? (k.wordGoal ? wordText(k.words || 0, k.wordGoal) : `${fmtN(k.words)} words`) : '')) : null);
   return el;
 }
 
@@ -868,6 +954,7 @@ function editAct(id) {
         h('input', { class: 'input input--title', value: a().title, placeholder: 'e.g. The Fog', oninput: (e) => upd((a) => { a.title = e.target.value; }) })),
       h('label', { class: 'field' }, h('span', { class: 'field__label' }, 'Notes'),
         autosize(h('textarea', { class: 'input', rows: 3, value: a().notes || '', placeholder: `What this ${lower(p.labels.act)} has to accomplish, where it turns`, oninput: (e) => upd((a) => { a.notes = e.target.value; }) }))),
+      goalField('Word goal', () => a().wordGoal, (v) => upd((a) => { a.wordGoal = v; }), (() => { const ids = new Set(p.columns.filter((c) => c.actId === id).map((c) => c.id)); return `So far: ${fmtN(wordsOf(p.cards.filter((k) => ids.has(k.colId))))} words`; })()),
     ],
     actions: [
       h('button', { class: 'btn btn--ghost btn--danger', type: 'button', onclick: async () => {
@@ -952,6 +1039,7 @@ function editCard(id, isNew = false, after = null) {
       p.types.length ? entityPicker(p, () => k().entityIds, (ids) => upd((c) => { c.entityIds = ids; }))
         : h('p', { class: 'muted small' }, 'Add entry types (characters, places…) in the Project tab to link them here.')),
     p.cardFields.map((f) => fieldInput(p, f, () => k().fields[f.id], (v) => upd((c) => { c.fields[f.id] = v; }))),
+    wordsBox(p, k, upd),
     h('div', { class: 'field' }, h('span', { class: 'field__label' }, 'Setup & payoff'), setupBox),
     isSeries() ? timelineFields(p, k, upd, () => d) : null,
     h('label', { class: 'field' }, h('span', { class: 'field__label' }, 'Notes'),
@@ -997,6 +1085,31 @@ function cardOptions(p, value, selfId) {
     return cards.length ? h('optgroup', { label },
       cards.map((x) => h('option', { value: x.id, selected: x.id === value }, x.title || 'Untitled scene'))) : null;
   }));
+}
+
+// Word count and goal on a scene, with the running totals around it.
+function wordsBox(p, k, upd) {
+  const totals = h('p', { class: 'wbox__totals' });
+  const drawTotals = () => {
+    clear(totals);
+    const c = k();
+    const col = p.columns.find((x) => x.id === c.colId);
+    const cw = wordsOf(p.cards.filter((x) => x.colId === c.colId));
+    const pw = wordsOf(p.cards);
+    const bits = [];
+    if (col) bits.push([`This ${lower(p.labels.column)}: `, wordText(cw, col.wordGoal) || '0 words']);
+    bits.push([isSeries() ? 'This book: ' : 'Project: ', wordText(pw, p.wordGoal) || '0 words']);
+    if (isSeries()) bits.push(['Series: ', wordText(wordsOf(scopeCards()), S.project.wordGoal) || '0 words']);
+    bits.forEach(([l, v], i) => append(totals, [i ? ' · ' : '', l, h('strong', {}, v)]));
+  };
+  drawTotals();
+  return h('section', { class: 'wbox', 'aria-label': 'Word count' },
+    h('div', { class: 'wbox__row' },
+      h('label', { class: 'field' }, h('span', { class: 'field__label' }, 'Word count'),
+        numberInput(() => k().words, (v) => { upd((c) => { c.words = v; }); drawTotals(); }, { placeholder: '0', class: 'input input--num input--words' })),
+      h('label', { class: 'field' }, h('span', { class: 'field__label' }, 'Goal (optional)'),
+        numberInput(() => k().wordGoal, (v) => { upd((c) => { c.wordGoal = v; }); }, { placeholder: 'No goal' }))),
+    totals);
 }
 
 function cardSelect(p, value, selfId, onChange) {
@@ -1075,6 +1188,7 @@ function editColumn(id) {
       text('One-line teaser', 'teaser', 'Shown on the home page and in link previews'),
       text('Previously…', 'recap', 'A short recap for returning readers', true),
       text('Planning notes', 'notes', 'Goals for this part, the cliffhanger, what must be true by the end', true),
+      goalField('Word goal', () => c().wordGoal, (v) => upd((c) => { c.wordGoal = v; }), `So far: ${fmtN(wordsOf(p.cards.filter((k) => k.colId === id)))} words`),
       h('div', { class: 'row2' },
         h('label', { class: 'field' }, h('span', { class: 'field__label' }, 'Publish date'),
           h('input', { class: 'input', type: 'date', value: c().date || '', onchange: (e) => upd((c) => { c.date = e.target.value; }) })),
@@ -1656,6 +1770,7 @@ function viewProject(p) {
     sec('basics', 'Basics', null,
       text('Title', () => p.title, (v) => { p.title = v; }),
       text('Synopsis', () => p.synopsis, (v) => { p.synopsis = v; }, { long: true }),
+      goalField(isSeries() ? 'Word goal for this book' : 'Word goal', () => p.wordGoal, (v) => upd(() => { p.wordGoal = v; }), `So far: ${fmtN(wordsOf(p.cards))} words`),
       text('Serial name on the site', () => p.storySlug, (v) => { p.storySlug = slugify(v); }, { hint: 'Used when exporting a part. It’s the serial’s address on oliveratwood.com, e.g. the-glass-orchard for /stories/the-glass-orchard/.' }),
       h('div', { class: 'row3' },
         text('Columns are called', () => p.labels.column, (v) => { p.labels.column = v || 'Part'; }, { placeholder: 'Part' }),
@@ -1831,7 +1946,8 @@ async function importFile(e) {
 function bookStats(b) {
   const pub = b.columns.filter((c) => c.canon).length;
   const parts = plural(b.columns.length, lower(b.labels.column));
-  return `${parts} · ${plural(b.cards.length, 'scene')}${pub ? ` · ${pub} published` : ''}`;
+  const w = wordsOf(b.cards);
+  return `${parts} · ${plural(b.cards.length, 'scene')}${pub ? ` · ${pub} published` : ''}${w || b.wordGoal ? ' · ' + (b.wordGoal ? wordText(w, b.wordGoal) + ' words' : `${fmtN(w)} words`) : ''}`;
 }
 
 function viewBooks(series) {
@@ -2034,7 +2150,8 @@ function viewSeriesSettings(series) {
     h('h1', { class: 'display' }, 'Series settings'),
     sec('basics', 'Basics', null,
       text('Name', () => series.title, (v) => { series.title = v; }),
-      text('Synopsis', () => series.synopsis, (v) => { series.synopsis = v; }, { long: true })),
+      text('Synopsis', () => series.synopsis, (v) => { series.synopsis = v; }, { long: true }),
+      goalField('Word goal for the whole series', () => series.wordGoal, (v) => upd(() => { series.wordGoal = v; }), `So far: ${fmtN(wordsOf(series.books.flatMap((b) => b.cards)))} words across every book`)),
     sec('calendar', 'Story calendar', `How in-world time is divided on the timeline. ${placed ? `${plural(placed, 'scene')} already placed: renaming is safe, but removing or reordering lines moves those scenes.` : 'Rename freely: ages, reigns, seasons, stardates.'}`,
       h('div', { class: 'row2' },
         lines('Years (one per line)', 'Or eras, reigns, cycles…', 'years'),
