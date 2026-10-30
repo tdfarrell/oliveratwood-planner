@@ -214,12 +214,14 @@ export function normalize(p) {
   syncActs(p);
   p.notes = p.notes || '';
   p.nameBank = Array.isArray(p.nameBank) ? p.nameBank : [];
+  p.game = normalizeGame(p.game);
   for (const c of p.cards) {
     c.entityIds = c.entityIds || [];
     c.fields = c.fields || {};
     c.status = STATUSES.some(([v]) => v === c.status) ? c.status : 'idea';
     c.links = Array.isArray(c.links) ? c.links : [];
     c.when = c.when && Number.isInteger(c.when.y) ? c.when : null;
+    c.game = Array.isArray(c.game) ? c.game : [];
   }
   for (const e of p.entities) { e.fields = e.fields || {}; e.summary = e.summary || ''; e.notes = e.notes || ''; }
   for (const t of p.types) t.fields = t.fields || [];
@@ -275,7 +277,7 @@ export const LINK_KINDS = [
   ['retold', 'Retold or remembered'],
 ];
 
-const WORLD_KEYS = ['types', 'entities', 'nameBank'];
+const WORLD_KEYS = ['types', 'entities', 'nameBank', 'game'];
 const BOOK_KEYS = ['title', 'synopsis', 'storySlug', 'labels', 'columns', 'rows', 'cards', 'cardFields', 'acts', 'notes', 'created'];
 
 export function newSeries(title) {
@@ -327,6 +329,7 @@ export function importProject(series, project, groupId) {
     series.entities.push({ ...e, typeId: typeMap[e.typeId] || e.typeId, fields });
   }
   for (const n of project.nameBank || []) if (!series.nameBank.some((x) => x.name === n.name)) series.nameBank.push(n);
+  if (project.game && project.game.on && !series.game.on) series.game = normalizeGame(JSON.parse(JSON.stringify(project.game)));
   const book = { id: uid(), groupId };
   for (const k of BOOK_KEYS) if (project[k] !== undefined) book[k] = project[k];
   attachBook(series, book);
@@ -377,6 +380,8 @@ export function mergeEntities(series, keepId, dropId) {
   for (const e of series.entities) {
     for (const [k, v] of Object.entries(e.fields || {})) if (Array.isArray(v) && v.includes(dropId)) e.fields[k] = swap(v).filter((x) => x !== e.id);
   }
+  if (!keep.sheet && drop.sheet) keep.sheet = drop.sheet;
+  for (const b of series.books) for (const c of b.cards) for (const ev of c.game || []) if (ev.who === dropId) ev.who = keepId;
   series.entities = series.entities.filter((e) => e.id !== dropId);
 }
 
@@ -393,6 +398,7 @@ export function prepare(data) {
   s.calendar.parts = Array.isArray(s.calendar.parts) && s.calendar.parts.length ? s.calendar.parts : ['—'];
   s.groups = Array.isArray(s.groups) && s.groups.length ? s.groups : [{ id: uid(), title: 'Main series', color: LINE_COLORS[0] }];
   for (const k of ['books', 'types', 'entities', 'nameBank']) s[k] = Array.isArray(s[k]) ? s[k] : [];
+  s.game = normalizeGame(s.game);
   for (const t of s.types) t.fields = t.fields || [];
   for (const e of s.entities) { e.fields = e.fields || {}; e.summary = e.summary || ''; e.notes = e.notes || ''; }
   for (const b of s.books) {
@@ -410,3 +416,91 @@ export function prepare(data) {
   Object.defineProperty(s, 'labels', { get: () => ({ column: 'Part', row: 'Thread', numerals: 'roman', act: 'Act', useActs: false }), set: () => {}, enumerable: false, configurable: true });
   return s;
 }
+
+// ======================================================================
+// Game sheets (LitRPG)
+// ======================================================================
+//
+// A character's sheet is never stored whole. It is their starting sheet
+// (entity.sheet.base) plus every game event on scene cards (card.game), applied
+// in reading order. Each scene with events for a character is one "version".
+
+export const DEFAULT_TEMPLATE = {
+  identity: ['Gamer tag', 'Class', 'Race'],
+  resources: ['HP', 'MP', 'Stamina'],
+  stats: ['STR', 'AGI', 'VIT', 'INT', 'WIS', 'LCK'],
+  slots: ['Weapon', 'Off-hand', 'Armor', 'Trinket'],
+};
+
+export const GAME_EVENTS = [
+  ['level', 'Level up'],
+  ['stat', 'Stat'],
+  ['res', 'HP / MP…'],
+  ['skill', 'Skill'],
+  ['item', 'Item'],
+  ['equip', 'Equip'],
+  ['id', 'Class / identity'],
+  ['title', 'Title'],
+  ['note', 'Note'],
+];
+
+export function normalizeGame(g) {
+  g = g && typeof g === 'object' ? g : {};
+  g.on = !!g.on;
+  g.look = g.look === 'planner' ? 'planner' : 'game';
+  const t = g.tpl && typeof g.tpl === 'object' ? g.tpl : {};
+  g.tpl = {};
+  for (const k of Object.keys(DEFAULT_TEMPLATE)) g.tpl[k] = Array.isArray(t[k]) ? t[k] : [...DEFAULT_TEMPLATE[k]];
+  return g;
+}
+
+export function blankSheet() {
+  return { level: 1, xp: '', id: {}, res: {}, stats: {}, slots: {}, skills: [], items: [], titles: [] };
+}
+
+const same = (a, b) => String(a || '').trim().toLowerCase() === String(b || '').trim().toLowerCase();
+
+export function applyEvent(sh, e) {
+  const n = (v) => (v === '' || v == null || isNaN(+v) ? null : +v);
+  switch (e.kind) {
+    case 'level': if (n(e.value) != null) sh.level = n(e.value); break;
+    case 'stat': if (e.key) sh.stats[e.key] = (n(sh.stats[e.key]) || 0) + (n(e.delta) || 0); break;
+    case 'res': if (e.key && n(e.value) != null) sh.res[e.key] = n(e.value); break;
+    case 'id': if (e.key) sh.id[e.key] = e.value || ''; break;
+    case 'equip': if (e.key) sh.slots[e.key] = e.value || ''; break;
+    case 'skill': {
+      if (!e.name) break;
+      const i = sh.skills.findIndex((x) => same(x.name, e.name));
+      if (e.op === 'remove') { if (i >= 0) sh.skills.splice(i, 1); break; }
+      if (i >= 0) sh.skills[i] = { ...sh.skills[i], rank: e.rank || sh.skills[i].rank, rarity: e.rarity || sh.skills[i].rarity };
+      else sh.skills.push({ name: e.name, rank: e.rank || '', rarity: e.rarity || '' });
+      break;
+    }
+    case 'item': case 'title': {
+      if (!e.name) break;
+      const list = e.kind === 'item' ? sh.items : sh.titles;
+      const i = list.findIndex((x) => same(x, e.name));
+      if (e.op === 'remove') { if (i >= 0) list.splice(i, 1); } else if (i < 0) list.push(e.name);
+      break;
+    }
+    default: break;
+  }
+  return sh;
+}
+
+// Plain-language summary of one event.
+export function describeEvent(e, before) {
+  switch (e.kind) {
+    case 'level': return `Level ${before ? before.level + ' → ' : ''}${e.value || '?'}`;
+    case 'stat': { const d = +e.delta || 0; return `${e.key || 'Stat'} ${d >= 0 ? '+' : ''}${d}`; }
+    case 'res': return `${e.key || 'Resource'} → ${e.value || '?'}`;
+    case 'id': return `${e.key || 'Identity'}: ${e.value || '—'}`;
+    case 'equip': return e.value ? `Equipped ${e.value} (${e.key || 'slot'})` : `Unequipped ${e.key || 'slot'}`;
+    case 'skill': return e.op === 'remove' ? `Lost skill ${e.name || '?'}` : `${before && before.skills.some((x) => same(x.name, e.name)) ? 'Skill' : 'Learned'} ${e.name || '?'}${e.rank ? ' · ' + e.rank : ''}${e.rarity ? ' · ' + e.rarity : ''}`;
+    case 'item': return `${e.op === 'remove' ? 'Lost' : 'Got'} ${e.name || '?'}`;
+    case 'title': return `${e.op === 'remove' ? 'Lost title' : 'Title:'} ${e.name || '?'}`;
+    default: return e.text || 'Note';
+  }
+}
+
+export const cloneSheet = (sh) => JSON.parse(JSON.stringify(sh));

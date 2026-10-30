@@ -1,6 +1,7 @@
 import { h, append, clear, icon, openDialog, choose, confirmDanger, ask, toast, autosize } from './dom.js';
 import { TEMPLATES, PALETTE, FIELD_TYPES, STATUSES, STATUS_SHORT, uid, slugify, numeral, roman, normalize, valueText, actsOn, syncActs,
-  prepare, newSeries, newBook, importProject, findDuplicates, mergeEntities, LINE_COLORS, LINK_KINDS } from './model.js';
+  prepare, newSeries, newBook, importProject, findDuplicates, mergeEntities, LINE_COLORS, LINK_KINDS,
+  GAME_EVENTS, blankSheet, applyEvent, describeEvent, cloneSheet } from './model.js';
 import { ServerStore, LocalStore, unsaved } from './store.js';
 import { KINDS, FLAVORS, kindForType, generate } from './names.js';
 
@@ -466,6 +467,7 @@ function render() {
     document.title = `${series.title} · Planner`;
     tabs = [
       ['timeline', 'Timeline', 'timeline', shref()],
+      gameOn() ? ['progress', 'Progression', 'spark', shref('progress')] : null,
       ['books', 'Books', 'book', shref('books')],
       ['world', 'Shared world', 'globe', shref('world')],
       ['continuity', 'Continuity', 'link', shref('continuity')],
@@ -477,12 +479,14 @@ function render() {
     else if (tab === 'e') main = viewEntity(p, S.route.id);
     else if (tab === 'continuity') main = viewContinuity(p);
     else if (tab === 'settings') main = viewSeriesSettings(series);
+    else if (tab === 'progress' && gameOn()) main = viewProgression(p);
     else { activeTab = 'timeline'; main = viewTimeline(series); }
     crumbs = [h('a', { class: 'top__project', href: shref() }, series.title), h('span', { class: 'pill pill--series' }, 'Series')];
   } else {
     document.title = `${p.title} · Planner`;
     tabs = [
       ['grid', 'Grid', 'grid', phref()],
+      gameOn() ? ['progress', 'Progression', 'spark', phref('progress')] : null,
       ['world', series ? 'Shared world' : 'World', 'globe', phref('world')],
       ['continuity', 'Continuity', 'link', phref('continuity')],
       ['project', series ? 'Book' : 'Project', 'gear', phref('project')],
@@ -493,18 +497,19 @@ function render() {
     else if (tab === 'e') main = viewEntity(p, S.route.id);
     else if (tab === 'continuity') main = viewContinuity(p);
     else if (tab === 'project') main = viewProject(p);
+    else if (tab === 'progress' && gameOn()) main = viewProgression(p);
     else { activeTab = 'grid'; main = viewGrid(p); }
     crumbs = series
       ? [h('a', { class: 'top__project', href: shref() }, series.title), h('span', { class: 'crumb-sep', 'aria-hidden': 'true' }, '›'), h('a', { class: 'top__book', href: phref() }, p.title)]
       : [h('a', { class: 'top__project', href: phref() }, p.title)];
   }
 
-  const wide = activeTab === 'grid' || activeTab === 'timeline';
+  const wide = activeTab === 'grid' || activeTab === 'timeline' || activeTab === 'progress';
   const shell = h('div', { class: 'page' + (wide ? ' page--grid' : '') },
     h('header', { class: 'top' },
       brand(),
       h('span', { class: 'top__crumbs' }, crumbs),
-      h('nav', { class: 'tabs', 'aria-label': 'Views' }, tabs.map(([id, label, ic, url]) =>
+      h('nav', { class: 'tabs', 'aria-label': 'Views' }, tabs.filter(Boolean).map(([id, label, ic, url]) =>
         h('a', { class: 'tab' + (activeTab === id ? ' is-on' : ''), href: url, 'aria-current': activeTab === id ? 'page' : null },
           icon(ic), h('span', {}, label)))),
       h('div', { class: 'top__right' }, wordPill(), searchBox(p),
@@ -891,6 +896,13 @@ function cardEl(p, k, r) {
     h('h3', { class: 'card__title' + (k.title ? '' : ' muted') }, k.title || 'Untitled scene'),
     h('span', { class: 'card__status', title: st[1] }, STATUS_SHORT[k.status] || st[1])),
   !S.compact && k.summary ? h('p', { class: 'card__sum' }, k.summary) : null,
+  gameOn() && (k.game || []).length ? h('div', { class: 'card__game' }, icon('spark'), (() => {
+    const lvs = k.game.filter((x) => x.kind === 'level');
+    const ids = [...new Set(k.game.map((x) => x.who))];
+    const who = ids.map((id) => entity(id)?.name).filter(Boolean);
+    if (ids.length === 1 && lvs.length) return `Level ${lvs[lvs.length - 1].value || '?'} · ${who[0] || ''}`;
+    return `${lvs.length ? plural(lvs.length, 'level-up') : plural(k.game.length, 'game event')}${who.length ? ' · ' + who.join(', ') : ''}`;
+  })()) : null,
   (k.setup || payoffOf) ? h('div', { class: 'card__flags' },
     k.setup ? h('span', { class: 'flag' + (payoff ? '' : ' flag--open') }, icon('flag'),
       payoff ? `Pays off in ${where(payoff)}` : 'Setup, not paid off') : null,
@@ -1040,6 +1052,7 @@ function editCard(id, isNew = false, after = null) {
         : h('p', { class: 'muted small' }, 'Add entry types (characters, places…) in the Project tab to link them here.')),
     p.cardFields.map((f) => fieldInput(p, f, () => k().fields[f.id], (v) => upd((c) => { c.fields[f.id] = v; }))),
     wordsBox(p, k, upd),
+    gameOn() ? gameBox(p, k, upd) : null,
     h('div', { class: 'field' }, h('span', { class: 'field__label' }, 'Setup & payoff'), setupBox),
     isSeries() ? timelineFields(p, k, upd, () => d) : null,
     h('label', { class: 'field' }, h('span', { class: 'field__label' }, 'Notes'),
@@ -1648,6 +1661,16 @@ function viewEntity(p, id) {
         h('span', { class: 'app__text' }, h('span', { class: 'app__title' }, k.title || 'Untitled scene'),
           h('span', { class: 'app__sub' }, (isSeries() ? ci.b.title + ' · ' : '') + (ci.row?.title || '')))));
     })) : h('p', { class: 'muted small' }, 'Not in any scene yet. Link it from a card’s “In this scene”.'),
+    (() => {
+      const m = sheetMentions(e);
+      if (!m.length) return null;
+      return [h('h2', { class: 'aside__title' }, 'On game sheets'),
+        h('ul', { class: 'apps' }, m.map((x) => h('li', {}, x.k
+          ? h('button', { class: 'app', type: 'button', onclick: () => openCard(x.k.id) },
+            h('span', { class: 'app__text' }, h('span', { class: 'app__title' }, x.c.name), h('span', { class: 'app__sub' }, `${describeEvent(x.ev)} · ${x.k.title || 'Untitled scene'}`)))
+          : h('a', { class: 'app', href: href(pbase('e/' + x.c.id)), onclick: () => { S.entityView = 'sheet'; S.sheetV = 0; } },
+            h('span', { class: 'app__text' }, h('span', { class: 'app__title' }, x.c.name), h('span', { class: 'app__sub' }, 'On their starting sheet'))))))];
+    })(),
     linkedFrom.length ? [h('h2', { class: 'aside__title' }, 'Linked from'),
       h('ul', { class: 'apps' }, linkedFrom.map((l) => h('li', {}, h('a', { class: 'app', href: phref('e/' + l.e.id), style: { '--c': l.color } },
         h('span', { class: 'app__text' }, h('span', { class: 'app__title' }, l.e.name || 'Unnamed'), h('span', { class: 'app__sub' }, l.field))))))] : null);
@@ -1656,7 +1679,11 @@ function viewEntity(p, id) {
     h('section', { class: 'world__main entity', style: { '--c': t?.color } },
       h('div', { class: 'entity__bar' },
         h('a', { class: 'back', href: phref('world/' + (t?.id || '')) }, icon('back'), t?.name || 'World'),
-        h('span', { class: 'spacer' }), typeSel,
+        h('span', { class: 'spacer' }),
+        gameOn() ? h('div', { class: 'tl-seg', role: 'group', 'aria-label': 'Entry view' },
+          h('button', { class: 'tl-seg__btn' + (S.entityView !== 'sheet' ? ' is-on' : ''), type: 'button', 'aria-pressed': String(S.entityView !== 'sheet'), onclick: () => { S.entityView = 'profile'; render(); } }, 'Profile'),
+          h('button', { class: 'tl-seg__btn' + (S.entityView === 'sheet' ? ' is-on' : ''), type: 'button', 'aria-pressed': String(S.entityView === 'sheet'), onclick: () => { S.entityView = 'sheet'; render(); } }, icon('spark'), ' Game sheet')) : null,
+        typeSel,
         h('button', { class: 'btn btn--ghost btn--sm btn--danger', type: 'button', onclick: async () => {
           if (await confirmDanger(`Delete ${e.name || 'this entry'}?`, apps.length || linkedFrom.length ? 'It will also be unlinked from every card and entry that mentions it.' : 'It isn’t linked anywhere.')) {
             const back = pbase('world/' + (t?.id || ''));
@@ -1669,7 +1696,7 @@ function viewEntity(p, id) {
             go(back);
           }
         } }, icon('trash'), ' Delete')),
-      h('div', { class: 'entity__cols' }, form, aside)));
+      gameOn() && S.entityView === 'sheet' ? viewSheet(p, e) : h('div', { class: 'entity__cols' }, form, aside)));
 }
 
 // ======================================================================
@@ -1791,6 +1818,7 @@ function viewProject(p) {
     sec('notebook', 'Notebook', book ? 'A scratchpad for this book.' : 'A scratchpad for the whole project: themes, the ending you’re aiming for, questions to answer.',
       autosize(h('textarea', { class: 'input notebook', rows: 6, value: p.notes, 'aria-label': 'Notebook', oninput: (e) => upd(() => { p.notes = e.target.value; }) }))),
     sec('types', 'Entry types', book ? 'Shared by every book in the series. Changes apply to every entry of that type, in every book.' : 'The kinds of things in this world, and the fields each one has. Changes apply to every entry of that type.', typesWrap),
+    gameSettings(),
     sec('cardfields', 'Extra card fields', 'Fields every scene card gets, on top of title, summary, status and links.',
       fieldsEditor(p, p.cardFields)),
     book ? null : backupSection(),
@@ -2159,6 +2187,7 @@ function viewSeriesSettings(series) {
     sec('notebook', 'Series notebook', 'The big picture: where the whole series is headed, rules that hold across books.',
       autosize(h('textarea', { class: 'input notebook', rows: 6, value: series.notes, 'aria-label': 'Series notebook', oninput: (e) => upd(() => { series.notes = e.target.value; }) }))),
     sec('types', 'Entry types', 'Shared by every book in the series.', typesWrap),
+    gameSettings(),
     backupSection(),
     sec('danger', 'Delete', null,
       h('button', { class: 'btn btn--danger', type: 'button', onclick: async () => {
@@ -2341,6 +2370,7 @@ function viewTimeline(series) {
       style: { left: it.x - 9 + 'px', top: it.top + 'px', '--c': c }, onclick: () => openCard(it.k.id) },
     h('span', { class: 'tl-chip__dot st-' + it.k.status }),
     h('span', { class: 'tl-chip__t' }, it.k.title || 'Untitled scene'),
+    gameOn() && (it.k.game || []).length ? icon('spark', 'tl-chip__ico') : null,
     ((it.k.links || []).length || items.some((o) => (o.k.links || []).some((l) => l.id === it.k.id))) && order !== 'world' ? icon('link', 'tl-chip__ico') : null);
   };
 
@@ -2489,6 +2519,481 @@ function viewTimeline(series) {
     toolbar, strip,
     order === 'world' && !shown.length ? h('p', { class: 'tl-hint tl-hint--warn' }, 'No scenes are placed in time yet. Open any scene and set “When in the story”, or switch to Reading order.') : null,
     box, tray);
+}
+
+// ======================================================================
+// Game sheets (LitRPG)
+// ======================================================================
+
+const gameOn = () => !!(S.project && S.project.game && S.project.game.on);
+const sheetChars = () => (S.project ? S.project.entities.filter((e) => e.sheet) : []);
+const initialsOf = (name) => (name || '?').split(/\s+/).filter(Boolean).slice(0, 2).map((w) => w[0]).join('').toUpperCase();
+const sameName = (a, b) => String(a || '').trim().toLowerCase() === String(b || '').trim().toLowerCase();
+
+// Every card in reading order: the whole series, or the project.
+function readingSeq() {
+  const books = isSeries() ? S.project.books : [S.project];
+  return books.flatMap((b) => {
+    const ci = (id) => b.columns.findIndex((c) => c.id === id);
+    const ri = (id) => b.rows.findIndex((r) => r.id === id);
+    return b.cards.map((k, i) => ({ k, i })).sort((x, y) => ci(x.k.colId) - ci(y.k.colId) || ri(x.k.rowId) - ri(y.k.rowId) || x.i - y.i).map(({ k }) => ({ k, b }));
+  });
+}
+
+// A character's sheet over the story: the start, then one step per scene with events.
+function progressOf(e) {
+  let sheet = cloneSheet(e.sheet ? e.sheet.base : blankSheet());
+  const base = cloneSheet(sheet);
+  const steps = [];
+  for (const { k, b } of readingSeq()) {
+    const evs = (k.game || []).filter((x) => x.who === e.id);
+    if (!evs.length) continue;
+    const before = cloneSheet(sheet);
+    const lines = [];
+    for (const ev of evs) { lines.push({ kind: ev.kind, text: describeEvent(ev, sheet) }); applyEvent(sheet, ev); }
+    steps.push({ k, b, evs, lines, before, after: cloneSheet(sheet) });
+  }
+  return { base, steps };
+}
+
+// Sheet as of the end of a given card (or the start if the card is before any event).
+function sheetAt(e, card) {
+  const pr = progressOf(e);
+  const seq = readingSeq();
+  const pos = seq.findIndex((x) => x.k === card);
+  let cur = pr.base;
+  for (const st of pr.steps) { if (seq.findIndex((x) => x.k === st.k) <= pos) cur = st.after; }
+  return cur;
+}
+
+function stepWhere(st) {
+  const ci = cardInfo(st.k);
+  return `${isSeries() ? st.b.title + ' · ' : ''}${ci.b.labels.column} ${ci.num}`;
+}
+
+// ---------- The sheet itself ----------
+
+function renderSheet(e, sh, prev) {
+  const tpl = S.project.game.tpl;
+  const look = S.project.game.look;
+  const diffN = (a, b) => { if (!prev) return ''; const d = (+a || 0) - (+b || 0); return d ? (d > 0 ? '+' : '') + d : ''; };
+  const isNew = (cond) => (prev && cond ? ' is-new' : '');
+  const tag = sh.id['Gamer tag'] || '';
+  const others = tpl.identity.filter((k) => k !== 'Gamer tag' && sh.id[k]).map((k) => sh.id[k]);
+  const lvlD = prev ? diffN(sh.level, prev.level) : '';
+  const prevSkill = (n) => prev && prev.skills.find((x) => sameName(x.name, n));
+  return h('section', { class: 'gs gs--' + look, 'aria-label': 'Game sheet' },
+    h('div', { class: 'gs__head' },
+      h('span', { class: 'gs__ava', 'aria-hidden': 'true' }, initialsOf(e.name)),
+      h('div', { class: 'gs__who' },
+        h('span', { class: 'gs__tag' }, tag ? `⟨ ${tag} ⟩` : e.name || 'Unnamed'),
+        h('span', { class: 'gs__line' }, [tag ? e.name : null, ...others].filter(Boolean).join(' · ') || 'No class or race yet')),
+      h('div', { class: 'gs__lvl' }, h('span', { class: 'gs__k' }, 'LEVEL'), h('span', { class: 'gs__lv' }, String(sh.level ?? 1)),
+        lvlD ? h('span', { class: 'gs__d' }, lvlD) : null)),
+    sh.xp ? h('div', { class: 'gs__xp' }, h('span', { class: 'gs__k' }, 'XP'), h('span', {}, sh.xp)) : null,
+    tpl.resources.length ? h('div', { class: 'gs__res' }, tpl.resources.map((r) => {
+      const d = prev ? diffN(sh.res[r], prev.res[r]) : '';
+      return h('div', { class: 'gs__tile' + (d ? ' is-new' : '') }, h('span', { class: 'gs__k' }, r), h('span', { class: 'gs__v' }, sh.res[r] ?? '—'), h('span', { class: 'gs__d' }, d));
+    })) : null,
+    tpl.stats.length ? h('div', { class: 'gs__block' }, h('span', { class: 'gs__h' }, 'STATS'),
+      h('div', { class: 'gs__stats' }, tpl.stats.map((k) => {
+        const d = prev ? diffN(sh.stats[k], prev.stats[k]) : '';
+        return h('div', { class: 'gs__tile gs__tile--stat' + (d ? ' is-new' : '') }, h('span', { class: 'gs__k' }, k), h('span', { class: 'gs__v gs__v--big' }, sh.stats[k] ?? '—'), h('span', { class: 'gs__d' }, d));
+      }))) : null,
+    h('div', { class: 'gs__two' },
+      h('div', { class: 'gs__block' }, h('span', { class: 'gs__h' }, 'SKILLS'),
+        sh.skills.length ? sh.skills.map((x) => {
+          const was = prevSkill(x.name);
+          const nw = prev && !was, up = prev && was && (was.rank !== x.rank || was.rarity !== x.rarity);
+          return h('div', { class: 'gs__row' + (nw || up ? ' is-new' : '') },
+            h('span', { class: 'gs__name' }, x.name), x.rarity ? h('span', { class: 'gs__rar gs__rar--' + String(x.rarity).toLowerCase() }, x.rarity) : null,
+            h('span', { class: 'gs__rank' }, (x.rank || '') + (up ? ' ▲' : '')), nw ? h('span', { class: 'gs__new' }, 'NEW') : null);
+        }) : h('span', { class: 'gs__none' }, 'None yet')),
+      h('div', { class: 'gs__block' }, h('span', { class: 'gs__h' }, 'EQUIPMENT'),
+        tpl.slots.length ? tpl.slots.map((sl) => {
+          const v = sh.slots[sl] || '';
+          const nw = prev && v && v !== (prev.slots[sl] || '');
+          return h('div', { class: 'gs__row' + (nw ? ' is-new' : '') }, h('span', { class: 'gs__slot' }, sl), h('span', { class: 'gs__name' + (v ? '' : ' is-empty') }, v || '—'), nw ? h('span', { class: 'gs__new' }, 'NEW') : null);
+        }) : h('span', { class: 'gs__none' }, 'No slots'))),
+    h('div', { class: 'gs__two' },
+      h('div', { class: 'gs__block' }, h('span', { class: 'gs__h' }, 'INVENTORY'),
+        h('div', { class: 'gs__chips' }, sh.items.length ? sh.items.map((x) => h('span', { class: 'gs__chip' + isNew(!prev?.items.some((y) => sameName(y, x))) }, x)) : h('span', { class: 'gs__none' }, 'Empty'))),
+      h('div', { class: 'gs__block' }, h('span', { class: 'gs__h' }, 'TITLES'),
+        h('div', { class: 'gs__chips' }, sh.titles.length ? sh.titles.map((x) => h('span', { class: 'gs__chip gs__chip--title' + isNew(!prev?.titles.some((y) => sameName(y, x))) }, x)) : h('span', { class: 'gs__none' }, 'None yet')))));
+}
+
+// ---------- Game sheet tab on a character ----------
+
+function viewSheet(p, e) {
+  if (!e.sheet) {
+    return h('div', { class: 'sheet-empty' },
+      h('p', { class: 'muted' }, `${e.name || 'This character'} doesn’t have a game sheet yet.`),
+      h('button', { class: 'btn btn--primary', type: 'button', onclick: () => change(() => { e.sheet = { base: blankSheet() }; }) }, icon('plus'), ` Give ${e.name || 'them'} a game sheet`));
+  }
+  const pr = progressOf(e);
+  const versions = [{ label: 'Start', sub: `Lv ${pr.base.level ?? 1}`, sheet: pr.base, prev: null, step: null }]
+    .concat(pr.steps.map((st, i) => ({ label: `v${i + 2} · Lv ${st.after.level ?? '?'}`, sub: `${stepWhere(st)} · ${st.k.title || 'Untitled scene'}`, sheet: st.after, prev: st.before, step: st })));
+  if (S.sheetV == null || S.sheetFor !== e.id || S.sheetV >= versions.length) { S.sheetV = versions.length - 1; S.sheetFor = e.id; }
+  const v = versions[S.sheetV];
+  const cmp = S.sheetCompare !== false;
+
+  const strip = h('div', { class: 'vstrip', role: 'group', 'aria-label': 'Versions' },
+    versions.map((x, i) => h('button', { class: 'vstrip__v' + (i === S.sheetV ? ' is-on' : ''), type: 'button', 'aria-pressed': String(i === S.sheetV), onclick: () => { S.sheetV = i; render(); } },
+      h('span', { class: 'vstrip__l' }, x.label), h('span', { class: 'vstrip__s' }, x.sub))),
+    h('button', { class: 'vstrip__add', type: 'button', onclick: () => addChangeDialog(e) }, icon('plus'), ' Level up / add a change'));
+
+  const side = h('aside', { class: 'sheet__side' },
+    h('div', { class: 'sheet__card' },
+      h('h2', { class: 'aside__title' }, S.sheetV === 0 ? 'Starting sheet' : 'This version'),
+      v.step ? [
+        h('p', { class: 'sheet__where' }, 'Takes effect in ', h('button', { class: 'linkbtn', type: 'button', onclick: () => openCard(v.step.k.id) }, `${stepWhere(v.step)} · ${v.step.k.title || 'Untitled scene'}`)),
+        h('ul', { class: 'evlist' }, v.step.lines.map((l) => h('li', {}, h('span', { class: 'evk evk--' + l.kind }, (GAME_EVENTS.find(([k]) => k === l.kind) || ['', l.kind])[1]), ' ', l.text))),
+        h('p', { class: 'muted small' }, 'To change this version, edit the game events on that scene.'),
+      ] : [
+        h('p', { class: 'muted small' }, 'Who they are when the story begins. Every later version builds on this.'),
+        h('button', { class: 'btn', type: 'button', onclick: () => editBaseSheet(e) }, icon('gear'), ' Edit starting sheet'),
+      ]),
+    h('div', { class: 'sheet__card muted small' }, 'Changes are recorded as game events on scene cards, in reading order. Move a scene and its level-up moves with it.'));
+
+  return h('div', { class: 'sheet' },
+    h('div', { class: 'sheet__bar' }, strip,
+      h('label', { class: 'check' }, h('input', { type: 'checkbox', checked: cmp, onchange: (ev) => { S.sheetCompare = ev.target.checked; render(); } }), ' Show changes from the version before')),
+    h('div', { class: 'sheet__cols' }, renderSheet(e, v.sheet, cmp ? v.prev : null), side));
+}
+
+function addChangeDialog(e) {
+  const p = P();
+  const sel = h('select', { class: 'input' }, h('option', { value: '' }, 'Choose the scene…'), cardOptions(isSeries() && !S.bookId ? (S.project.books[0] || p) : p, '', null));
+  const d = openDialog({
+    title: `Add a change for ${e.name || 'this character'}`,
+    body: [h('p', { class: 'muted' }, 'Level-ups, new skills and loot are added as game events on the scene where they happen.'),
+      h('label', { class: 'field' }, h('span', { class: 'field__label' }, 'Scene'), sel)],
+    actions: [h('button', { class: 'btn', type: 'button', onclick: () => d.close() }, 'Cancel'), h('span', { class: 'spacer' }),
+      h('button', { class: 'btn btn--primary', type: 'button', onclick: () => {
+        if (!sel.value) return;
+        const id = sel.value;
+        S.gameWho = e.id;
+        d.close();
+        setTimeout(() => openCard(id), 0);
+      } }, 'Open scene')],
+  });
+}
+
+function editBaseSheet(e) {
+  const tpl = S.project.game.tpl;
+  const b = () => e.sheet.base;
+  const upd = (fn) => change(() => fn(b()), { render: false });
+  const txt = (label, get, set, ph) => h('label', { class: 'field' }, h('span', { class: 'field__label' }, label), h('input', { class: 'input', value: get() || '', placeholder: ph || '', oninput: (ev) => upd(() => set(ev.target.value)) }));
+  const num = (label, get, set) => h('label', { class: 'field' }, h('span', { class: 'field__label' }, label), h('input', { class: 'input input--num', inputmode: 'numeric', value: get() ?? '', oninput: (ev) => upd(() => { const v = ev.target.value.trim(); set(v === '' || isNaN(+v) ? undefined : +v); }) }));
+  const lines = (label, hint, get, set) => h('label', { class: 'field' }, h('span', { class: 'field__label' }, label), h('span', { class: 'field__hint' }, hint),
+    autosize(h('textarea', { class: 'input', rows: 3, value: get(), oninput: (ev) => upd(() => set(ev.target.value)) })));
+  openDialog({
+    title: `${e.name || 'Character'}: starting sheet`,
+    wide: true,
+    body: [
+      h('div', { class: 'row3' }, num('Level', () => b().level, (v) => { b().level = v ?? 1; }), txt('XP', () => b().xp, (v) => { b().xp = v; }, '40 / 100')),
+      h('div', { class: 'row3' }, tpl.identity.map((k) => txt(k, () => b().id[k], (v) => { b().id[k] = v; }))),
+      tpl.resources.length ? h('div', { class: 'row3' }, tpl.resources.map((k) => num(k, () => b().res[k], (v) => { b().res[k] = v; }))) : null,
+      tpl.stats.length ? h('div', { class: 'gs-statgrid' }, tpl.stats.map((k) => num(k, () => b().stats[k], (v) => { b().stats[k] = v; }))) : null,
+      tpl.slots.length ? h('div', { class: 'row2' }, tpl.slots.map((k) => txt(k, () => b().slots[k], (v) => { b().slots[k] = v; }))) : null,
+      lines('Skills', 'One per line: name, rank, rarity', () => b().skills.map((x) => [x.name, x.rank, x.rarity].filter(Boolean).join(', ')).join('\n'),
+        (v) => { b().skills = v.split('\n').map((l) => l.split(',').map((x) => x.trim())).filter((a) => a[0]).map(([name, rank, rarity]) => ({ name, rank: rank || '', rarity: rarity || '' })); }),
+      h('div', { class: 'row2' },
+        lines('Inventory', 'One item per line', () => b().items.join('\n'), (v) => { b().items = v.split('\n').map((x) => x.trim()).filter(Boolean); }),
+        lines('Titles', 'One per line', () => b().titles.join('\n'), (v) => { b().titles = v.split('\n').map((x) => x.trim()).filter(Boolean); })),
+    ],
+    actions: [
+      h('button', { class: 'btn btn--ghost btn--danger', type: 'button', onclick: async () => {
+        if (await confirmDanger('Remove this game sheet?', 'The starting sheet is removed. Game events on scenes stay, and come back if you add a sheet again.', 'Remove sheet')) {
+          change(() => { delete e.sheet; });
+        }
+      } }, icon('trash'), ' Remove sheet'),
+      h('span', { class: 'spacer' }),
+      h('button', { class: 'btn btn--primary', type: 'button', onclick: (ev) => ev.target.closest('dialog').close() }, 'Done')],
+    onClose: () => render(),
+  });
+}
+
+// Where a World entry (a skill, item, class…) shows up on game sheets.
+function sheetMentions(e) {
+  if (!gameOn() || !e.name) return [];
+  const out = [];
+  const chars = new Map(sheetChars().map((c) => [c.id, c]));
+  for (const { k } of readingSeq()) {
+    for (const ev of k.game || []) {
+      const c = chars.get(ev.who);
+      if (!c || c.id === e.id) continue;
+      if (sameName(ev.name, e.name) || sameName(ev.value, e.name)) out.push({ c, k, ev });
+    }
+  }
+  for (const c of sheetChars()) {
+    const b = c.sheet.base;
+    if (c.id !== e.id && (b.skills.some((x) => sameName(x.name, e.name)) || b.items.some((x) => sameName(x, e.name)) || b.titles.some((x) => sameName(x, e.name)) || Object.values(b.slots).some((x) => sameName(x, e.name)) || Object.values(b.id).some((x) => sameName(x, e.name)))) {
+      out.unshift({ c, k: null, ev: null });
+    }
+  }
+  return out;
+}
+
+// ---------- Game events on a scene card ----------
+
+function gameBox(p, k, upd) {
+  const box = h('section', { class: 'gev', 'aria-label': 'Game events' });
+  const draw = () => {
+    clear(box);
+    const c = k();
+    const chars = sheetChars();
+    const tpl = S.project.game.tpl;
+    const inScene = chars.filter((x) => c.entityIds.includes(x.id));
+    let who = S.gameWho && chars.some((x) => x.id === S.gameWho) ? S.gameWho : (inScene[0] || chars[0] || {}).id;
+    append(box, [h('div', { class: 'gev__head' }, icon('spark'), h('strong', {}, 'Game events in this scene'))]);
+    if (!chars.length) {
+      box.append(h('p', { class: 'muted small' }, 'No one has a game sheet yet. Open a character in World and choose “Game sheet”.'));
+      return;
+    }
+    const sel = (opts, val, on, label) => h('select', { class: 'input input--sm', 'aria-label': label, onchange: (e) => on(e.target.value) }, opts.map(([v, l]) => h('option', { value: v, selected: v === val }, l)));
+    const inp = (val, on, ph, cls = '') => h('input', { class: 'input input--sm ' + cls, value: val ?? '', placeholder: ph, oninput: (e) => on(e.target.value) });
+    const set = (i, patch, redraw = false) => { upd((cc) => { Object.assign(cc.game[i], patch); }); if (redraw) draw(); };
+    const opSel = (i, ev, a, b) => sel([['add', a], ['remove', b]], ev.op || 'add', (v) => set(i, { op: v }), 'Gains or loses');
+    c.game.forEach((ev, i) => {
+      let fields;
+      switch (ev.kind) {
+        case 'level': fields = [h('span', { class: 'gev__t' }, 'to level'), inp(ev.value, (v) => set(i, { value: v }), '7', 'gev__num')]; break;
+        case 'stat': fields = [sel(tpl.stats.map((x) => [x, x]), ev.key, (v) => set(i, { key: v }), 'Stat'), inp(ev.delta, (v) => set(i, { delta: v }), '+2', 'gev__num')]; break;
+        case 'res': fields = [sel(tpl.resources.map((x) => [x, x]), ev.key, (v) => set(i, { key: v }), 'Resource'), h('span', { class: 'gev__t' }, 'becomes'), inp(ev.value, (v) => set(i, { value: v }), '150', 'gev__num')]; break;
+        case 'id': fields = [sel(tpl.identity.map((x) => [x, x]), ev.key, (v) => set(i, { key: v }), 'Identity'), h('span', { class: 'gev__t' }, 'becomes'), inp(ev.value, (v) => set(i, { value: v }), 'Pathwarden')]; break;
+        case 'equip': fields = [sel(tpl.slots.map((x) => [x, x]), ev.key, (v) => set(i, { key: v }), 'Slot'), inp(ev.value, (v) => set(i, { value: v }), 'Item (empty to unequip)')]; break;
+        case 'skill': fields = [opSel(i, ev, 'Learns or ranks up', 'Loses'), inp(ev.name, (v) => set(i, { name: v }), 'Skill'), inp(ev.rank, (v) => set(i, { rank: v }), 'Rank', 'gev__num'), inp(ev.rarity, (v) => set(i, { rarity: v }), 'Rarity', 'gev__num')]; break;
+        case 'item': fields = [opSel(i, ev, 'Gets', 'Loses'), inp(ev.name, (v) => set(i, { name: v }), 'Item')]; break;
+        case 'title': fields = [opSel(i, ev, 'Earns', 'Loses'), inp(ev.name, (v) => set(i, { name: v }), 'Title')]; break;
+        default: fields = [inp(ev.text, (v) => set(i, { text: v }), 'What happened (for your notes)')];
+      }
+      box.append(h('div', { class: 'gev__row' },
+        chars.length > 1 ? sel(chars.map((x) => [x.id, x.name || 'Unnamed']), ev.who, (v) => set(i, { who: v }), 'Character') : null,
+        h('span', { class: 'evk evk--' + ev.kind }, (GAME_EVENTS.find(([x]) => x === ev.kind) || ['', ev.kind])[1]),
+        h('span', { class: 'gev__fields' }, fields),
+        h('button', { class: 'iconbtn', type: 'button', 'aria-label': 'Remove event', onclick: () => { upd((cc) => { cc.game.splice(i, 1); }); draw(); } }, icon('x'))));
+    });
+    const whoSel = chars.length > 1 ? sel(chars.map((x) => [x.id, x.name || 'Unnamed']), who, (v) => { S.gameWho = v; draw(); }, 'Add events for') : null;
+    box.append(h('div', { class: 'gev__add' },
+      chars.length > 1 ? [h('span', { class: 'muted small' }, 'Add for'), whoSel] : h('span', { class: 'muted small' }, `Add for ${chars[0].name}:`),
+      GAME_EVENTS.map(([kind, label]) => h('button', { class: 'btn btn--ghost btn--sm', type: 'button', onclick: () => {
+        const ev = { id: uid(), who, kind };
+        if (kind === 'stat') ev.key = tpl.stats[0]; if (kind === 'res') ev.key = tpl.resources[0];
+        if (kind === 'id') ev.key = tpl.identity.find((x) => x !== 'Gamer tag') || tpl.identity[0];
+        if (kind === 'equip') ev.key = tpl.slots[0];
+        if (kind === 'level') { const now = sheetAt(chars.find((x) => x.id === who), c); ev.value = String((+now.level || 0) + 1); }
+        upd((cc) => { cc.game.push(ev); }); draw();
+        const rows = box.querySelectorAll('.gev__row input'); if (rows.length) rows[rows.length - 1].focus();
+      } }, '+ ' + label))));
+    const touched = chars.filter((x) => c.game.some((ev) => ev.who === x.id));
+    if (touched.length) {
+      box.append(h('div', { class: 'gev__after' }, touched.map((x) => {
+        const sh = sheetAt(x, c);
+        const cls = S.project.game.tpl.identity.filter((kk) => kk !== 'Gamer tag').map((kk) => sh.id[kk]).filter(Boolean).join(' · ');
+        return h('p', { class: 'small' }, h('strong', {}, `${x.name}, after this scene: `), `Lv ${sh.level ?? 1}${cls ? ' · ' + cls : ''} · ${plural(sh.skills.length, 'skill')} · ${plural(sh.items.length, 'item')} `,
+          h('a', { href: href(pbase('e/' + x.id)), onclick: () => { S.entityView = 'sheet'; S.sheetV = null; } }, 'Open sheet'));
+      })));
+    }
+  };
+  draw();
+  return box;
+}
+
+function gameSettings() {
+  const g = S.project.game;
+  const upd = (fn) => change(fn, { render: false });
+  const list = (label, key, hint) => h('label', { class: 'field' }, h('span', { class: 'field__label' }, label), h('span', { class: 'field__hint' }, hint),
+    h('input', { class: 'input', value: g.tpl[key].join(', '), oninput: (e) => upd(() => { g.tpl[key] = e.target.value.split(',').map((x) => x.trim()).filter(Boolean); }) }));
+  return h('section', { class: 'psec', id: 'game' },
+    h('div', { class: 'psec__row' },
+      h('div', {},
+        h('h2', { class: 'psec__title' }, 'Game sheets (LitRPG)'),
+        h('p', { class: 'muted small' }, `Video-game style sheets for the characters you choose, with versions that change as the story goes.${isSeries() ? ' Shared by every book in the series.' : ''} Turning this off hides the sheets without deleting them.`)),
+      h('label', { class: 'switch' }, h('input', { type: 'checkbox', checked: g.on, onchange: (e) => change(() => { g.on = e.target.checked; }) }), h('span', { class: 'switch__ui', 'aria-hidden': 'true' }), h('span', {}, g.on ? 'On' : 'Off'))),
+    g.on ? [
+      h('div', { class: 'row2' },
+        list('Identity', 'identity', 'Text fields; “Gamer tag” is shown as the sheet’s name'),
+        list('Resources', 'resources', 'Numbers like HP and MP')),
+      h('div', { class: 'row2' },
+        list('Stats', 'stats', 'Comma separated'),
+        list('Equipment slots', 'slots', 'Comma separated')),
+      h('p', { class: 'muted small' }, 'Every sheet also has level, XP, skills (with rank and rarity), inventory and titles. Renaming a stat or slot here doesn’t rename it on events that already use the old name.'),
+      h('div', { class: 'field' }, h('span', { class: 'field__label' }, 'Look'),
+        h('div', { class: 'tl-seg' },
+          h('button', { class: 'tl-seg__btn' + (g.look === 'game' ? ' is-on' : ''), type: 'button', onclick: () => change(() => { g.look = 'game'; }) }, 'Status window'),
+          h('button', { class: 'tl-seg__btn' + (g.look === 'planner' ? ' is-on' : ''), type: 'button', onclick: () => change(() => { g.look = 'planner'; }) }, 'Planner style'))),
+    ] : null);
+}
+
+// ---------- Progression: timeline and grid ----------
+
+function viewProgression(p) {
+  const PR = S.prog || (S.prog = { view: 'timeline', metric: 'level', hide: {}, who: null, changesOnly: true });
+  const chars = sheetChars();
+  const head = h('div', { class: 'tl-head' },
+    h('div', {}, h('h1', { class: 'display' }, 'Progression'),
+      h('p', { class: 'muted' }, isSeries() && !S.bookId ? 'Every game sheet across the whole series, in reading order.' : 'Every game sheet across this ' + (isSeries() ? 'book' : 'story') + ', in reading order.')));
+  if (!chars.length) {
+    return h('div', { class: 'tl' }, head, h('p', { class: 'tl-hint' }, 'No one has a game sheet yet. Open a character in ', h('a', { href: phref('world') }, 'World'), ' and switch to “Game sheet”.'));
+  }
+  const tpl = S.project.game.tpl;
+  const seg = (v, label) => h('button', { class: 'tl-seg__btn' + (PR.view === v ? ' is-on' : ''), type: 'button', 'aria-pressed': String(PR.view === v), onclick: () => { PR.view = v; render(); } }, label);
+  const books = isSeries() ? (S.bookId ? [P()] : S.project.books) : [S.project];
+  const seqAll = readingSeq();
+  const seqIdx = new Map(seqAll.map((x, i) => [x.k, i]));
+  const inScope = seqAll.filter((x) => books.includes(x.b));
+  const first = inScope.length ? seqIdx.get(inScope[0].k) : Infinity;
+  const progress = new Map(chars.map((c) => {
+    const pr = progressOf(c);
+    let start = pr.base;
+    for (const st of pr.steps) if (seqIdx.get(st.k) < first) start = st.after;
+    return [c.id, { start, steps: pr.steps.filter((st) => books.includes(st.b)), all: pr.steps }];
+  }));
+
+  const bar = h('div', { class: 'tl-bar' },
+    h('div', { class: 'tl-seg', role: 'group', 'aria-label': 'View' }, seg('timeline', 'Timeline'), seg('grid', 'Grid')));
+  let body;
+  if (PR.view === 'grid') {
+    const who = chars.find((c) => c.id === PR.who) || chars[0];
+    bar.append(h('div', { class: 'tl-toggles', role: 'group', 'aria-label': 'Character' },
+      chars.map((c) => h('button', { class: 'tl-toggle' + (c === who ? ' is-on' : ''), type: 'button', 'aria-pressed': String(c === who), onclick: () => { PR.who = c.id; render(); } },
+        c.name + (c.sheet.base.id['Gamer tag'] ? ' · ' + c.sheet.base.id['Gamer tag'] : '')))),
+    h('label', { class: 'check' }, h('input', { type: 'checkbox', checked: PR.changesOnly, onchange: (e) => { PR.changesOnly = e.target.checked; render(); } }), ' Only rows that change'));
+    body = progressGrid(who, progress.get(who.id), tpl, !(first > 0 && first !== Infinity));
+  } else {
+    const metrics = [['level', 'Level'], ...tpl.stats.map((x) => ['stat:' + x, x]), ...tpl.resources.map((x) => ['res:' + x, x])];
+    bar.append(
+      h('label', { class: 'tl-metric' }, h('span', { class: 'tl-label' }, 'Track'),
+        h('select', { class: 'input input--sm', onchange: (e) => { PR.metric = e.target.value; render(); } }, metrics.map(([v, l]) => h('option', { value: v, selected: PR.metric === v }, l)))),
+      h('div', { class: 'tl-toggles', role: 'group', 'aria-label': 'Show' }, h('span', { class: 'tl-label' }, 'Show'),
+        chars.map((c) => h('button', { class: 'tl-toggle' + (PR.hide[c.id] ? '' : ' is-on'), type: 'button', 'aria-pressed': String(!PR.hide[c.id]), onclick: () => { PR.hide = { ...PR.hide, [c.id]: !PR.hide[c.id] }; render(); } }, c.name))));
+    body = progressTimeline(books, inScope, chars.filter((c) => !PR.hide[c.id]), progress, PR.metric);
+  }
+  return h('div', { class: 'tl' }, head, bar, body);
+}
+
+const metricOf = (sh, m) => {
+  if (m === 'level') return +sh.level || 0;
+  const [kind, key] = m.split(':');
+  return +((kind === 'stat' ? sh.stats : sh.res)[key]) || 0;
+};
+
+function progressTimeline(books, inScope, chars, progress, metric) {
+  const STEP = 34, LH = 124, PT = 22, PH = 40;
+  const pos = new Map();
+  const r1 = [], r2 = [], lines = [];
+  let off = 0;
+  const multi = books.length > 1;
+  for (const b of books) {
+    const bStart = off;
+    b.columns.forEach((c, ci) => {
+      const cards = inScope.filter((x) => x.b === b && x.k.colId === c.id);
+      cards.forEach((x, j) => pos.set(x.k, off + 18 + j * STEP));
+      const w = Math.max(120, 18 + cards.length * STEP + 20);
+      (multi ? r2 : r1).push({ label: `${b.labels.column} ${numeral(b, ci)}${c.title ? ' · ' + c.title : ''}`, left: off, width: w });
+      if (!multi) r2.push({ label: plural(cards.length, 'scene'), left: off, width: w });
+      lines.push({ left: off, strong: ci === 0 });
+      off += w;
+    });
+    if (multi) r1.push({ label: b.title || 'Untitled book', left: bStart, width: off - bStart });
+  }
+  const TW = Math.max(off, 400);
+  const mLabel = metric === 'level' ? 'Lv' : metric.split(':')[1];
+
+  const gridLayer = h('div', { class: 'tl-gridlayer', style: { width: TW + 'px' } },
+    lines.map((l) => h('span', { class: 'tl-line' + (l.strong ? ' is-strong' : ''), style: { left: l.left + 'px' } })));
+  const ruler = h('div', { class: 'tl-row tl-row--ruler' },
+    h('div', { class: 'tl-lab tl-lab--ruler' }, 'Reading order'),
+    h('div', { class: 'tl-track', style: { width: TW + 'px', height: '64px' } },
+      r1.map((r) => h('span', { class: 'tl-r1', style: { left: r.left + 'px', width: r.width + 'px' } }, r.label)),
+      r2.map((r) => h('span', { class: 'tl-r2', style: { left: r.left + 'px', width: r.width + 'px' } }, r.label))));
+
+  const lanes = chars.map((c) => {
+    const pr = progress.get(c.id);
+    const steps = pr.steps.filter((st) => pos.has(st.k));
+    const vals = [metricOf(pr.start, metric), ...steps.map((st) => metricOf(st.after, metric))];
+    const lo = Math.min(...vals), hi = Math.max(...vals);
+    const y = (v) => PT + (hi === lo ? PH / 2 : (1 - (v - lo) / (hi - lo)) * PH);
+    let d = `M0 ${y(vals[0])}`;
+    steps.forEach((st, i) => { d += ` H${pos.get(st.k)} V${y(vals[i + 1])}`; });
+    d += ` H${TW}`;
+    const svgNS = 'http://www.w3.org/2000/svg';
+    const svg = document.createElementNS(svgNS, 'svg');
+    svg.setAttribute('class', 'pg-line'); svg.setAttribute('width', TW); svg.setAttribute('height', LH); svg.setAttribute('aria-hidden', 'true');
+    const path = document.createElementNS(svgNS, 'path'); path.setAttribute('d', d); svg.append(path);
+    let lastTag = -1e9, tagRow = 0;
+    const marks = steps.map((st, i) => {
+      const x = pos.get(st.k), v = vals[i + 1], changed = v !== vals[i];
+      const notable = st.evs.filter((ev) => ['id', 'skill', 'title', 'equip'].includes(ev.kind) || (ev.kind === 'item' && ev.op !== 'remove'));
+      const tags = notable.slice(0, 2).map((ev) => {
+        if (ev.kind === 'id') return ev.value || '';
+        if (ev.kind === 'skill') return (ev.op === 'remove' ? '−' : '+') + (ev.name || '');
+        if (ev.kind === 'title') return '★ ' + (ev.name || '');
+        return ev.value || ev.name || '';
+      }).filter(Boolean);
+      if (notable.length > 2) tags.push(`+${notable.length - 2} more`);
+      // Neighbouring markers alternate between two label rows so they don't overlap.
+      if (tags.length) { tagRow = x - lastTag < 130 ? 1 - tagRow : 0; lastTag = x; }
+      return [
+        h('button', { class: 'pg-mark' + (changed ? ' is-up' : ''), type: 'button', style: { left: x - 8 + 'px', top: y(v) - 8 + 'px' },
+          title: `${stepWhere(st)} · ${st.k.title || 'Untitled scene'}\n` + st.lines.map((l) => '• ' + l.text).join('\n'),
+          'aria-label': `${c.name}: ${st.lines.map((l) => l.text).join(', ')}`, onclick: () => openCard(st.k.id) }),
+        changed ? h('span', { class: 'pg-val', style: { left: x + 'px', top: y(v) - 24 + 'px' } }, `${mLabel} ${v}`) : null,
+        tags.length ? h('span', { class: 'pg-tags', style: { left: x - 8 + 'px', top: (tagRow ? 96 : 68) + 'px' } }, h('span', {}, tags[0]), tags.length > 1 ? h('span', { class: 'pg-tags__more' }, `+${tags.length - 1}`) : null) : null,
+      ];
+    });
+    const endV = vals[vals.length - 1];
+    return h('div', { class: 'tl-row', style: { height: LH + 'px' } },
+      h('a', { class: 'tl-lab tl-lab--ent pg-lab', href: href(pbase('e/' + c.id)), onclick: () => { S.entityView = 'sheet'; S.sheetV = null; } },
+        h('span', { class: 'tl-ava', style: { '--c': '#C9531A' } }, initialsOf(c.name)),
+        h('span', { class: 'pg-lab__text' }, h('span', { class: 'tl-lab__name' }, c.name || 'Unnamed'),
+          h('span', { class: 'tl-lab__meta' }, c.sheet.base.id['Gamer tag'] || plural(steps.length, 'change'))),
+        h('span', { class: 'pg-lab__now' }, `${mLabel} ${endV}`)),
+      h('div', { class: 'tl-track', style: { width: TW + 'px', height: LH + 'px' } }, svg, marks));
+  });
+
+  const any = chars.some((c) => progress.get(c.id).steps.length);
+  return [
+    any ? null : h('p', { class: 'tl-hint' }, 'No game events in this stretch yet. Add them on scene cards (“Game events in this scene”).'),
+    h('div', { class: 'tl-box' }, h('div', { class: 'tl-inner', style: { width: `calc(var(--labw) + ${TW + 24}px)` } }, gridLayer, ruler, lanes)),
+  ];
+}
+
+function progressGrid(who, pr, tpl, fromStart) {
+  const cols = [{ label: fromStart ? 'Start' : 'Coming in', sub: fromStart ? 'Starting sheet' : 'From earlier books', sheet: pr.start, step: null }]
+    .concat(pr.steps.map((st) => ({ label: `v${pr.all.indexOf(st) + 2} · Lv ${st.after.level ?? '?'}`, sub: stepWhere(st), sheet: st.after, step: st })));
+  const union = (f) => { const seen = []; for (const c of cols) for (const n of f(c.sheet)) if (!seen.some((x) => sameName(x, n))) seen.push(n); return seen; };
+  const has = (list, n) => list.some((x) => sameName(x, n));
+  const groups = [
+    ['Core', [['Level', (sh) => sh.level ?? ''], ['XP', (sh) => sh.xp || ''], ...tpl.identity.map((k) => [k, (sh) => sh.id[k] || '']), ...tpl.resources.map((k) => [k, (sh) => sh.res[k] ?? ''])]],
+    ['Stats', tpl.stats.map((k) => [k, (sh) => sh.stats[k] ?? ''])],
+    ['Skills', union((sh) => sh.skills.map((x) => x.name)).map((n) => [n, (sh) => { const x = sh.skills.find((y) => sameName(y.name, n)); return x ? (x.rank || '✓') + (x.rarity ? ' · ' + x.rarity : '') : ''; }])],
+    ['Equipment', tpl.slots.map((k) => [k, (sh) => sh.slots[k] || ''])],
+    ['Inventory', union((sh) => sh.items).map((n) => [n, (sh) => (has(sh.items, n) ? '✓' : '')])],
+    ['Titles', union((sh) => sh.titles).map((n) => [n, (sh) => (has(sh.titles, n) ? '✓' : '')])],
+  ];
+  const rowsFor = (rows) => rows.map(([label, f]) => {
+    const vals = cols.map((c) => f(c.sheet));
+    const changes = vals.map((v, i) => i > 0 && String(v) !== String(vals[i - 1]));
+    if (S.prog.changesOnly && !changes.some(Boolean)) return null;
+    return h('tr', {}, h('th', { scope: 'row', class: 'pg-th' }, label),
+      vals.map((v, i) => {
+        const prev = vals[i - 1];
+        const dn = changes[i] && typeof v === 'number' && typeof prev === 'number' ? (v - prev > 0 ? ' +' : ' ') + (v - prev) : '';
+        return h('td', { class: 'pg-td' + (changes[i] ? ' is-changed' : '') + (v === '' ? ' is-empty' : '') }, v === '' ? '—' : String(v), dn ? h('span', { class: 'pg-d' }, dn) : null);
+      }));
+  }).filter(Boolean);
+  const body = groups.flatMap(([title, rows]) => {
+    const rs = rowsFor(rows);
+    return rs.length ? [h('tr', {}, h('th', { scope: 'rowgroup', class: 'pg-group', colspan: String(cols.length + 1) }, title)), ...rs] : [];
+  });
+  return h('div', { class: 'pg-box' }, h('table', { class: 'pg-table' },
+    h('thead', {}, h('tr', {}, h('th', { scope: 'col', class: 'pg-th pg-th--corner' }, who.name),
+      cols.map((c) => h('th', { scope: 'col', class: 'pg-col' },
+        h('span', { class: 'pg-col__v' }, c.label), h('span', { class: 'pg-col__w' }, c.sub),
+        c.step ? h('button', { class: 'linkbtn pg-col__s', type: 'button', onclick: () => openCard(c.step.k.id) }, c.step.k.title || 'Untitled scene') : null)))),
+    h('tbody', {}, body.length ? body : h('tr', {}, h('td', { class: 'pg-td', colspan: String(cols.length + 1) }, 'Nothing changes here yet.')))));
 }
 
 boot();
