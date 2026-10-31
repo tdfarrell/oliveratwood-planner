@@ -1000,7 +1000,7 @@ function newCard(colId, rowId) {
   change((p) => {
     let last = -1;
     p.cards.forEach((x, ix) => { if (x.colId === colId && x.rowId === rowId) last = ix; });
-    p.cards.splice(last + 1, 0, { id, colId, rowId, title: '', summary: '', notes: '', status: 'idea', entityIds: [], setup: false, payoffId: null, fields: {}, links: [], when: null });
+    p.cards.splice(last + 1, 0, { id, colId, rowId, title: '', summary: '', notes: '', status: 'idea', entityIds: [], setup: false, payoffId: null, fields: {}, links: [], when: null, game: [], words: null, wordGoal: null });
   }, { render: false });
   editCard(id, true);
 }
@@ -2742,6 +2742,7 @@ function gameBox(p, k, upd) {
   const draw = () => {
     clear(box);
     const c = k();
+    if (!Array.isArray(c.game)) c.game = [];
     const chars = sheetChars();
     const tpl = S.project.game.tpl;
     const inScene = chars.filter((x) => c.entityIds.includes(x.id));
@@ -2783,7 +2784,7 @@ function gameBox(p, k, upd) {
         if (kind === 'id') ev.key = tpl.identity.find((x) => x !== 'Gamer tag') || tpl.identity[0];
         if (kind === 'equip') ev.key = tpl.slots[0];
         if (kind === 'level') { const now = sheetAt(chars.find((x) => x.id === who), c); ev.value = String((+now.level || 0) + 1); }
-        upd((cc) => { cc.game.push(ev); }); draw();
+        upd((cc) => { (cc.game || (cc.game = [])).push(ev); }); draw();
         const rows = box.querySelectorAll('.gev__row input'); if (rows.length) rows[rows.length - 1].focus();
       } }, '+ ' + label))));
     const touched = chars.filter((x) => c.game.some((ev) => ev.who === x.id));
