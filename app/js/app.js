@@ -240,8 +240,9 @@ async function route() {
   if (!isSeries() && S.route.kind === 's') return go(`p/${S.slug}`);
   S.bookId = S.route.book || null;
   if (S.bookId && !S.project.books.some((b) => b.id === S.bookId)) { toast('That book isn’t in this series any more.'); return go(`s/${S.slug}/books`); }
+  const prevKey = S.renderKey;
   render();
-  window.scrollTo(0, 0);
+  if (S.renderKey !== prevKey) window.scrollTo(0, 0);
 }
 
 async function openProject(slug) {
@@ -309,6 +310,8 @@ function brand() {
 }
 
 function renderLoading() {
+  saveScroll();
+  S.renderKey = null;
   clear(root).append(h('div', { class: 'center' }, h('div', { class: 'spinner', role: 'status', 'aria-label': 'Loading' })));
 }
 
@@ -516,8 +519,35 @@ function render() {
         h('button', { class: 'iconbtn', type: 'button', title: 'Name generator', 'aria-label': 'Name generator', onclick: () => nameDialog({ kind: S.route.tab === 'world' || S.route.tab === 'e' ? kindForType((p.types.find((t) => t.id === S.route.id) || typeOf(entity(S.route.id)) || {}).name) : undefined, createType: S.route.tab === 'world' ? S.route.id : null }) }, icon('dice')),
         h('span', { id: 'save-status', class: 'status', 'aria-live': 'polite' }))),
     h('main', { class: 'main main--' + activeTab }, main));
+  const key = `${S.slug}|${S.bookId || ''}|${S.route.tab || ''}|${S.route.id || ''}`;
+  saveScroll();
   clear(root).append(shell);
+  restoreScroll(key);
   setStatus(S.status, S.statusMsg);
+}
+
+// Redrawing replaces the page, so remember where each scrolling area was
+// (per screen) and put it back: adding a scene no longer jumps to the start.
+const SCROLLERS = ['.grid-scroll', '.tl-box', '.pg-box'];
+function saveScroll() {
+  if (!S.renderKey) return;
+  const m = { win: window.scrollY };
+  for (const sel of SCROLLERS) {
+    const el = root.querySelector(sel);
+    if (el) m[sel] = [el.scrollLeft, el.scrollTop];
+  }
+  (S.scrollMem || (S.scrollMem = {}))[S.renderKey] = m;
+}
+function restoreScroll(key) {
+  const same = key === S.renderKey;
+  S.renderKey = key;
+  const m = S.scrollMem && S.scrollMem[key];
+  if (!m) return;
+  for (const sel of SCROLLERS) {
+    const el = root.querySelector(sel);
+    if (el && m[sel]) { el.scrollLeft = m[sel][0]; el.scrollTop = m[sel][1]; }
+  }
+  if (same) window.scrollTo(window.scrollX, m.win);
 }
 
 // ---------- Running word total (top bar) ----------
