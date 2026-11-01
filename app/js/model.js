@@ -575,6 +575,7 @@ export function makeBeats(key, project) {
 export function normalizeFlow(f, isSeries = false) {
   f = f && typeof f === 'object' ? f : {};
   for (const k of ['logline', 'theme', 'ending']) f[k] = typeof f[k] === 'string' ? f[k] : '';
+  f.notes = typeof f.notes === 'string' ? f.notes : '';
   f.structure = f.structure || (isSeries ? 'series' : 'three');
   f.beats = Array.isArray(f.beats) ? f.beats : [];
   for (const b of f.beats) {

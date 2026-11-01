@@ -221,8 +221,10 @@ const phref = (tail = '') => href(pbase(tail));
 const shref = (tail = '') => href(`s/${encodeURIComponent(S.slug)}${tail ? '/' + tail : ''}`);
 
 window.addEventListener('hashchange', route);
+window.addEventListener('pagehide', () => { if (S.flushNotes) S.flushNotes(); });
 
 async function route() {
+  if (S.flushNotes) { const fl = S.flushNotes; S.flushNotes = null; fl(); }
   document.querySelectorAll('dialog[open]').forEach((d) => d.close());
   S.route = parseRoute();
   if (S.route.view === 'home') {
@@ -459,6 +461,7 @@ function restoreDeletedDialog(list) {
 // ======================================================================
 
 function render() {
+  if (S.flushNotes) { const fl = S.flushNotes; S.flushNotes = null; fl(); }
   const p = P();
   if (!p) return renderHome();
   const tab = S.route.tab;
@@ -3239,12 +3242,14 @@ function viewFlow(p) {
   const f = p.flow;
   const series = isSeries() ? S.project : null;
   const n = f.beats.filter((b) => beatScenes(p, b).length).length;
+  const notes = flowView(f) === 'notes';
   const head = h('div', { class: 'flow-head' },
     h('div', {},
       h('h1', { class: 'display display--xl' }, 'Story flow'),
-      h('p', { class: 'muted' }, 'The shape of the whole story before the scenes. Plan the beats here; the grid keeps them in view while you build.')),
+      h('p', { class: 'muted' }, notes ? 'Scratch paper for the whole story. Get it all down, then turn the parts that matter into beats.' : 'The shape of the whole story before the scenes. Plan the beats here; the grid keeps them in view while you build.')),
     h('span', { class: 'spacer' }),
-    structurePicker(p, f, false));
+    notes ? null : structurePicker(p, f, false));
+  if (notes) return h('div', { class: 'wrap flow' }, series ? flowSwitch(series, p.id) : null, head, flowModes(f), notesView(p, f, false));
   const parts = h('div', { class: 'shape__parts' }, p.columns.map((c, i) => h('span', {}, colLabel(p, i))));
   const nCols = p.columns.length || 1;
   const actBands = actsOn(p) ? p.acts.map((a, ai) => {
@@ -3261,6 +3266,7 @@ function viewFlow(p) {
   return h('div', { class: 'wrap flow' },
     series ? flowSwitch(series, p.id) : null,
     head,
+    flowModes(f),
     flowBasics(f, [['logline', 'Logline', 'One or two sentences: who, what they want, what stands in the way'], ['theme', 'Theme', 'What the story is really about'], ['ending', 'Where it lands', 'How it ends, so every beat can aim there']]),
     f.beats.length ? h('section', { class: 'flow-card' },
       h('div', { class: 'flow-card__head' }, h('h2', { class: 'display' }, 'Shape'),
@@ -3299,6 +3305,240 @@ function beatEditor(p, f, b, i, series) {
         if (!(await confirmDanger(`Delete “${b.name || 'this beat'}”?`, scenes.length ? `${plural(scenes.length, 'scene')} lose${scenes.length === 1 ? 's' : ''} this tag. The scenes stay.` : 'No scenes use it.'))) return;
         change(() => { f.beats = f.beats.filter((x) => x !== b); for (const k of p.cards) if (k.beatId === b.id) k.beatId = null; });
       } }, icon('trash'))));
+}
+
+// ---------- Story notes: a free-form document per book, project and series ----------
+
+// Notes or Beats & shape. Until you choose, a flow with no beats opens on its notes.
+function flowView(f) {
+  const v = flowPref('view');
+  return v === 'notes' || v === 'beats' ? v : f.beats.length ? 'beats' : 'notes';
+}
+function flowModes(f, cur = flowView(f)) {
+  const b = (v, label, extra) => h('button', { class: 'tl-seg__btn' + (cur === v ? ' is-on' : ''), type: 'button', 'aria-pressed': String(cur === v),
+    onclick: () => { setFlowPref('view', v); render(); } }, label, extra ? h('span', { class: 'flow-modes__n' }, extra) : null);
+  const words = notesWords(f.notes);
+  return h('div', { class: 'tl-seg flow-modes', role: 'group', 'aria-label': 'Story flow view' },
+    b('notes', 'Story notes', words ? words.toLocaleString() + ' words' : null),
+    b('beats', 'Beats & shape', f.beats.length ? String(f.beats.length) : null));
+}
+
+// Only these tags survive; everything else is unwrapped to its text. No attributes at all.
+const NOTE_TAGS = { H2: 'h2', H3: 'h3', P: 'p', DIV: 'p', UL: 'ul', OL: 'ol', LI: 'li', B: 'b', STRONG: 'b', I: 'i', EM: 'i', U: 'u', S: 's', STRIKE: 's', BLOCKQUOTE: 'blockquote', BR: 'br', H1: 'h2', H4: 'h3', H5: 'h3', H6: 'h3' };
+const NOTE_BLOCKS = new Set(['h2', 'h3', 'p', 'ul', 'ol', 'blockquote']);
+function cleanNotes(src) {
+  const out = document.createElement('div');
+  const walk = (from, to) => {
+    for (const n of from.childNodes) {
+      if (n.nodeType === 3) { to.append(document.createTextNode(n.nodeValue)); continue; }
+      if (n.nodeType !== 1) continue;
+      if (['SCRIPT', 'STYLE', 'TEMPLATE', 'IFRAME', 'OBJECT', 'SVG', 'IMG', 'META', 'LINK', 'TITLE'].includes(n.tagName)) continue;
+      const tag = NOTE_TAGS[n.tagName];
+      if (!tag) { walk(n, to); continue; }
+      // A block inside a paragraph (pasted content) is flattened into the parent.
+      if (NOTE_BLOCKS.has(tag) && ['p', 'h2', 'h3', 'li'].includes(to.tagName?.toLowerCase()) && tag !== 'ul' && tag !== 'ol') { walk(n, to); continue; }
+      const el = document.createElement(tag);
+      to.append(el);
+      if (tag !== 'br') walk(n, el);
+    }
+  };
+  walk(src, out);
+  // Drop empty inline wrappers left over from editing.
+  out.querySelectorAll('b, i, u, s').forEach((x) => { if (!x.textContent) x.remove(); });
+  return out;
+}
+// Stored notes are parsed in an inert document, then rebuilt from the allowlist.
+function notesToDom(html) {
+  const doc = new DOMParser().parseFromString(`<body>${html || ''}</body>`, 'text/html');
+  return cleanNotes(doc.body);
+}
+function notesWords(html) {
+  if (!html) return 0;
+  const t = new DOMParser().parseFromString(`<body>${html}</body>`, 'text/html').body.textContent || '';
+  return (t.match(/[\p{L}\p{N}’']+/gu) || []).length;
+}
+
+const NOTES_STARTER = [
+  ['h2', 'The idea'], ['p', ''],
+  ['h2', 'Characters'], ['ul', ''],
+  ['h2', 'World'], ['ul', ''],
+  ['h2', 'How it goes'], ['ul', ''],
+  ['h2', 'How it ends'], ['p', ''],
+  ['h2', 'Open questions'], ['ul', ''],
+];
+
+function notesView(p, f, isSeriesArc) {
+  const ed = h('div', { class: 'notes__ed', contenteditable: 'true', role: 'textbox', 'aria-multiline': 'true', 'aria-label': 'Story notes', spellcheck: 'true',
+    'data-placeholder': 'Get the whole story out. Headings, bullets, half-ideas, questions: anything goes. Select a line and press “Make a beat” when something is ready.' });
+  append(ed, [...notesToDom(f.notes).childNodes]);
+  const count = h('span', { class: 'muted small' });
+  const showCount = () => { const w = (ed.innerText.match(/[\p{L}\p{N}’']+/gu) || []).length; count.textContent = w ? `${w.toLocaleString()} words` : ''; };
+  showCount();
+
+  let t = null;
+  const persist = () => {
+    clearTimeout(t);
+    t = null;
+    const html = cleanNotes(ed).innerHTML;
+    const empty = !ed.textContent.trim() && !ed.querySelector('li, h2, h3');
+    if ((empty ? '' : html) !== f.notes) change(() => { f.notes = empty ? '' : html; }, { render: false });
+  };
+  const soon = () => { showCount(); clearTimeout(t); t = setTimeout(persist, 500); };
+  ed.addEventListener('input', soon);
+  ed.addEventListener('blur', persist);
+  // Anything that redraws the page saves the notes first (see render).
+  S.flushNotes = () => { if (ed.isConnected) persist(); };
+
+  const cmd = (name, val) => { ed.focus(); document.execCommand(name, false, val); soon(); syncTools(); };
+  const block = (tag) => {
+    ed.focus();
+    const cur = currentBlock();
+    document.execCommand('formatBlock', false, cur && cur.tagName.toLowerCase() === tag ? 'p' : tag);
+    soon(); syncTools();
+  };
+  const currentBlock = () => {
+    const sel = getSelection();
+    if (!sel.rangeCount || !ed.contains(sel.anchorNode)) return null;
+    let n = sel.anchorNode.nodeType === 1 ? sel.anchorNode : sel.anchorNode.parentElement;
+    while (n && n !== ed && !['P', 'H2', 'H3', 'LI', 'BLOCKQUOTE', 'DIV'].includes(n.tagName)) n = n.parentElement;
+    return n && n !== ed ? n : null;
+  };
+
+  const tb = (label, title, fn, cls = '') => h('button', { class: 'notes__tb ' + cls, type: 'button', title, 'aria-label': title,
+    onmousedown: (e) => e.preventDefault(), onclick: fn }, label);
+  const tools = {
+    h2: tb('H1', 'Section heading (type # then space)', () => block('h2'), 'is-h'),
+    h3: tb('H2', 'Subheading (type ## then space)', () => block('h3'), 'is-h'),
+    ul: tb('• List', 'Bullet list (type - then space). Tab to indent.', () => cmd('insertUnorderedList')),
+    ol: tb('1. List', 'Numbered list (type 1. then space)', () => cmd('insertOrderedList')),
+    quote: tb('❝', 'Quote or aside (type > then space)', () => block('blockquote')),
+    b: tb(h('b', {}, 'B'), 'Bold (Ctrl/⌘ B)', () => cmd('bold')),
+    i: tb(h('i', {}, 'I'), 'Italic (Ctrl/⌘ I)', () => cmd('italic')),
+    s: tb(h('s', {}, 'S'), 'Strike through: done with this idea', () => cmd('strikeThrough')),
+  };
+  const syncTools = () => {
+    const cur = currentBlock();
+    const tag = cur ? cur.tagName.toLowerCase() : '';
+    const inList = (k) => !!(cur && cur.closest(k));
+    const on = { h2: tag === 'h2', h3: tag === 'h3', quote: tag === 'blockquote', ul: inList('ul'), ol: inList('ol') };
+    for (const k of ['b', 'i', 's']) { try { on[k] = document.queryCommandState({ b: 'bold', i: 'italic', s: 'strikeThrough' }[k]); } catch { on[k] = false; } }
+    for (const [k, el] of Object.entries(tools)) { el.classList.toggle('is-on', !!on[k]); el.setAttribute('aria-pressed', String(!!on[k])); }
+    const has = selectedText().length > 0;
+    makeBeat.disabled = !has;
+  };
+  const selectedText = () => {
+    const sel = getSelection();
+    if (!sel.rangeCount || sel.isCollapsed || !ed.contains(sel.anchorNode)) return '';
+    return sel.toString().trim();
+  };
+  // One page-wide listener; it follows whichever notes editor is on screen.
+  S.notesSync = () => { if (ed.isConnected) syncTools(); };
+  if (!S.notesListening) { S.notesListening = true; document.addEventListener('selectionchange', () => S.notesSync && S.notesSync()); }
+
+  const rail = h('div', { class: 'notes__beats' });
+  const drawRail = () => {
+    clear(rail);
+    append(rail, [
+      h('div', { class: 'notes__railhead' }, h('h2', { class: 'notes__railt' }, isSeriesArc ? 'Series beats' : 'Beats'), h('span', { class: 'muted small' }, f.beats.length ? String(f.beats.length) : '')),
+      f.beats.length ? h('ol', { class: 'notes__blist' }, f.beats.map((b, i) => {
+        const done = isSeriesArc ? seriesBeatDone(S.project, b) : beatScenes(p, b).length > 0;
+        return h('li', {}, h('button', { class: 'notes__bi', type: 'button', title: b.text || 'Open in Beats & shape',
+          onclick: () => { persist(); setFlowPref('view', 'beats'); render(); requestAnimationFrame(() => { const el = document.querySelector(`[data-beat="${b.id}"]`); if (el) { el.scrollIntoView({ block: 'center' }); el.querySelector('.beat__name')?.focus({ preventScroll: true }); } }); } },
+        h('span', { class: 'fbeat__mark' + (done ? ' is-done' : '') }, done ? '✓' : String(i + 1)), h('span', { class: 'notes__bn' }, b.name || 'Untitled beat')));
+      })) : h('p', { class: 'muted small' }, 'None yet. Select a line in your notes and press “Make a beat”.'),
+    ]);
+  };
+  drawRail();
+
+  const makeBeat = h('button', { class: 'btn btn--sm notes__mk', type: 'button', disabled: true, title: 'Turn the selected text into a beat',
+    onmousedown: (e) => e.preventDefault(),
+    onclick: () => {
+      const txt = selectedText();
+      if (!txt) return;
+      const lines = txt.split(/\n+/).map((x) => x.trim()).filter(Boolean);
+      let name = lines[0], text = lines.slice(1).join('\n');
+      if (name.length > 60) { text = lines.join('\n'); name = name.split(/\s+/).slice(0, 6).join(' ').replace(/[,.;:]$/, '') + '…'; }
+      const last = f.beats[f.beats.length - 1];
+      const b = { id: uid(), name, text, hint: '', pct: last ? Math.min(100, last.pct + 5) : 5, tension: 50, colId: null, parent: null };
+      persist();
+      change(() => { f.beats.push(b); }, { render: false });
+      drawRail();
+      flowModesRefresh();
+      toast(`Beat ${f.beats.length} added: “${name}”`);
+    } }, '◆ Make a beat');
+  // The Notes / Beats switch shows a beat count, so keep it current without a redraw.
+  const flowModesRefresh = () => { const old = document.querySelector('.flow-modes'); if (old) old.replaceWith(flowModes(f, 'notes')); };
+
+  const starter = h('button', { class: 'btn btn--ghost btn--sm', type: 'button', onclick: () => {
+    ed.focus();
+    clear(ed);
+    for (const [tag, txt] of NOTES_STARTER) {
+      const el = document.createElement(tag);
+      if (tag === 'ul') { const li = document.createElement('li'); li.append(document.createElement('br')); el.append(li); }
+      else if (txt) el.textContent = txt;
+      else el.append(document.createElement('br'));
+      ed.append(el);
+    }
+    persist(); starter.remove();
+  } }, 'Start with sections');
+
+  // Markdown-style shortcuts at the start of a line.
+  ed.addEventListener('keydown', (e) => {
+    if (e.key === 'Tab') {
+      const cur = currentBlock();
+      if (cur && cur.closest('li')) { e.preventDefault(); cmd(e.shiftKey ? 'outdent' : 'indent'); }
+      return;
+    }
+    if (e.key !== ' ') return;
+    const cur = currentBlock();
+    if (!cur) return;
+    const pre = cur.textContent;
+    const map = { '#': ['h2'], '##': ['h3'], '>': ['blockquote'], '-': ['ul'], '*': ['ul'], '1.': ['ol'] };
+    const m = map[pre];
+    if (!m || cur.tagName === 'LI' && m[0] !== 'ul' && m[0] !== 'ol') return;
+    const sel = getSelection();
+    if (!sel.isCollapsed) return;
+    e.preventDefault();
+    cur.textContent = '';
+    cur.append(document.createElement('br'));
+    const r = document.createRange(); r.setStart(cur, 0); r.collapse(true); sel.removeAllRanges(); sel.addRange(r);
+    if (m[0] === 'ul') cmd('insertUnorderedList');
+    else if (m[0] === 'ol') cmd('insertOrderedList');
+    else block(m[0]);
+  });
+  // Paste: keep structure, drop everything else.
+  ed.addEventListener('paste', (e) => {
+    const html = e.clipboardData.getData('text/html');
+    const text = e.clipboardData.getData('text/plain');
+    e.preventDefault();
+    if (html) {
+      const clean = cleanNotes(new DOMParser().parseFromString(html, 'text/html').body);
+      document.execCommand('insertHTML', false, clean.innerHTML);
+    } else document.execCommand('insertText', false, text);
+    soon();
+  });
+  try { document.execCommand('defaultParagraphSeparator', false, 'p'); } catch { /* older browsers */ }
+  // Always type inside a paragraph, so shortcuts and headings have a line to work on.
+  const ensureBlock = () => {
+    if (ed.firstElementChild && ![...ed.childNodes].some((n) => n.nodeType === 3 && n.nodeValue.trim())) return;
+    const para = document.createElement('p');
+    while (ed.firstChild) para.append(ed.firstChild);
+    if (!para.firstChild) para.append(document.createElement('br'));
+    ed.append(para);
+    const r = document.createRange(); r.selectNodeContents(para); r.collapse(false);
+    const sel = getSelection(); sel.removeAllRanges(); sel.addRange(r);
+  };
+  ed.addEventListener('focus', ensureBlock);
+
+  return h('div', { class: 'notes' },
+    h('section', { class: 'notes__doc flow-card' },
+      h('div', { class: 'notes__bar', role: 'toolbar', 'aria-label': 'Formatting' },
+        tools.h2, tools.h3, h('span', { class: 'notes__sep' }), tools.ul, tools.ol, tools.quote, h('span', { class: 'notes__sep' }), tools.b, tools.i, tools.s,
+        h('span', { class: 'spacer' }), count, makeBeat),
+      f.notes ? null : h('div', { class: 'notes__start' }, starter),
+      ed),
+    h('aside', { class: 'notes__rail flow-card' }, rail,
+      h('p', { class: 'muted small notes__tip' }, 'Select text in your notes, then “Make a beat”. The first line becomes its name, the rest what happens. Click a beat to open it in Beats & shape, where it gets a place in the story and its scenes.')));
 }
 
 // ---------- The series arc ----------
@@ -3342,12 +3582,20 @@ function viewSeriesArc(series) {
   };
   const upd = (fn) => change(fn, { render: false });
   const nDone = f.beats.filter((sb) => seriesBeatDone(series, sb)).length;
+  if (flowView(f) === 'notes') {
+    return h('div', { class: 'wrap flow' }, flowSwitch(series, 'series'),
+      h('div', { class: 'flow-head' }, h('div', {}, h('h1', { class: 'display display--xl' }, 'Series arc'),
+        h('p', { class: 'muted' }, 'Scratch paper for the whole series. Get it all down, then turn the parts that matter into series beats.'))),
+      flowModes(f),
+      notesView(series, f, true));
+  }
   return h('div', { class: 'wrap flow' },
     flowSwitch(series, 'series'),
     h('div', { class: 'flow-head' },
       h('div', {}, h('h1', { class: 'display display--xl' }, 'Series arc'),
         h('p', { class: 'muted' }, 'The story the whole series tells. Each book’s own beats sit under the series beat they move forward.')),
       h('span', { class: 'spacer' }), structurePicker(series, f, true)),
+    flowModes(f),
     flowBasics(f, [['logline', 'Series logline', 'The story all the books tell together'], ['theme', 'Theme', 'What the series is really about'], ['ending', 'Where it ends', 'The final image of the whole series']]),
     h('section', { class: 'flow-card' },
       h('div', { class: 'flow-card__head' }, h('h2', { class: 'display' }, 'Shape across the books'),
