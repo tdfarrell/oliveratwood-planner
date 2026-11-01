@@ -215,6 +215,7 @@ export function normalize(p) {
   p.notes = p.notes || '';
   p.nameBank = Array.isArray(p.nameBank) ? p.nameBank : [];
   p.game = normalizeGame(p.game);
+  p.flow = normalizeFlow(p.flow);
   for (const c of p.cards) {
     c.entityIds = c.entityIds || [];
     c.fields = c.fields || {};
@@ -222,6 +223,7 @@ export function normalize(p) {
     c.links = Array.isArray(c.links) ? c.links : [];
     c.when = c.when && Number.isInteger(c.when.y) ? c.when : null;
     c.game = Array.isArray(c.game) ? c.game : [];
+    c.beatId = c.beatId || null;
   }
   for (const e of p.entities) { e.fields = e.fields || {}; e.summary = e.summary || ''; e.notes = e.notes || ''; }
   for (const t of p.types) t.fields = t.fields || [];
@@ -278,7 +280,7 @@ export const LINK_KINDS = [
 ];
 
 const WORLD_KEYS = ['types', 'entities', 'nameBank', 'game'];
-const BOOK_KEYS = ['title', 'synopsis', 'storySlug', 'labels', 'columns', 'rows', 'cards', 'cardFields', 'acts', 'notes', 'created'];
+const BOOK_KEYS = ['title', 'synopsis', 'storySlug', 'labels', 'columns', 'rows', 'cards', 'cardFields', 'acts', 'notes', 'created', 'flow', 'wordGoal'];
 
 export function newSeries(title) {
   return {
@@ -399,6 +401,7 @@ export function prepare(data) {
   s.groups = Array.isArray(s.groups) && s.groups.length ? s.groups : [{ id: uid(), title: 'Main series', color: LINE_COLORS[0] }];
   for (const k of ['books', 'types', 'entities', 'nameBank']) s[k] = Array.isArray(s[k]) ? s[k] : [];
   s.game = normalizeGame(s.game);
+  s.flow = normalizeFlow(s.flow, true);
   for (const t of s.types) t.fields = t.fields || [];
   for (const e of s.entities) { e.fields = e.fields || {}; e.summary = e.summary || ''; e.notes = e.notes || ''; }
   for (const b of s.books) {
@@ -504,3 +507,82 @@ export function describeEvent(e, before) {
 }
 
 export const cloneSheet = (sh) => JSON.parse(JSON.stringify(sh));
+
+// ======================================================================
+// Story flow: beats planned before scenes
+// ======================================================================
+//
+// Each project (and each book) has a flow: logline, theme, ending, and beats.
+// A beat has a position through the story (pct 0–100), a tension (0–100) for
+// the shape curve, an optional planned part (colId), and in a series, the
+// series beat it moves forward (parent). Scene cards point at a beat (beatId).
+// A series has its own flow too: the series arc.
+
+const B = (name, pct, tension, hint) => ({ name, pct, tension, hint });
+export const STRUCTURES = {
+  three: { label: 'Three acts, 9 beats', beats: [
+    B('Opening image', 2, 15, 'Show the world before it changes.'),
+    B('Inciting incident', 10, 35, 'The event that makes the story start.'),
+    B('Lock-in', 25, 45, 'The choice that commits them; no going back.'),
+    B('Promise of the premise', 38, 50, 'The fun the reader came for.'),
+    B('Midpoint', 50, 70, 'A turn that changes what the story is about.'),
+    B('Bad guys close in', 62, 55, 'Pressure from every side.'),
+    B('All is lost', 75, 25, 'The lowest point.'),
+    B('Climax', 90, 95, 'Everything collides; the hero acts on what they’ve learned.'),
+    B('Final image', 99, 35, 'Mirror of the opening image.'),
+  ] },
+  stc: { label: 'Save the Cat (15 beats)', beats: [
+    B('Opening image', 1, 15, 'A snapshot of the hero’s world before.'), B('Theme stated', 5, 20, 'Someone hints at what the story is really about.'),
+    B('Set-up', 8, 25, 'Hero, world and what’s missing.'), B('Catalyst', 11, 40, 'The life-changing event.'),
+    B('Debate', 16, 35, 'Should they go?'), B('Break into Two', 22, 50, 'They choose the new world.'),
+    B('B story', 26, 45, 'A relationship that carries the theme.'), B('Fun and games', 35, 55, 'The promise of the premise.'),
+    B('Midpoint', 50, 72, 'False victory or false defeat; stakes rise.'), B('Bad guys close in', 60, 60, 'Doubt, jealousy and enemies tighten.'),
+    B('All is lost', 72, 25, 'The opposite of the midpoint.'), B('Dark night of the soul', 78, 15, 'Wallowing before the realisation.'),
+    B('Break into Three', 82, 55, 'The answer, thanks to the B story.'), B('Finale', 90, 95, 'Proving they’ve changed.'),
+    B('Final image', 99, 35, 'The opposite of the opening image.'),
+  ] },
+  hero: { label: 'Hero’s Journey (12 stages)', beats: [
+    B('Ordinary world', 2, 15, 'Home, before the adventure.'), B('Call to adventure', 8, 35, 'The problem arrives.'),
+    B('Refusal of the call', 12, 30, 'Fear, reluctance.'), B('Meeting the mentor', 17, 40, 'Advice, a gift, courage.'),
+    B('Crossing the threshold', 25, 50, 'Into the special world.'), B('Tests, allies, enemies', 35, 55, 'Learning the rules.'),
+    B('Approach', 45, 60, 'Preparing for the big ordeal.'), B('The ordeal', 52, 80, 'Facing death or the deepest fear.'),
+    B('Reward', 60, 55, 'Seizing the sword.'), B('The road back', 74, 65, 'Consequences give chase.'),
+    B('Resurrection', 88, 95, 'The final test, transformed.'), B('Return with the elixir', 98, 35, 'Home, changed, bringing something back.'),
+  ] },
+  kisho: { label: 'Kishōtenketsu (4 parts)', beats: [
+    B('Ki: introduction', 5, 20, 'Characters and setting.'), B('Shō: development', 30, 35, 'Things develop, no conflict needed.'),
+    B('Ten: twist', 62, 80, 'Something unexpected recontextualises everything.'), B('Ketsu: reconciliation', 90, 40, 'The parts come together.'),
+  ] },
+  serial: { label: 'Serial: a hook per installment', beats: null },
+  series: { label: 'Series arc (6 beats)', beats: [
+    B('The call', 4, 20, 'What pulls the hero into the series’ story.'), B('The world opens', 20, 40, 'The setting and its rules, at scale.'),
+    B('Rising cost', 38, 50, 'Each win costs more.'), B('Series midpoint', 52, 72, 'A revelation that reframes every book so far.'),
+    B('Darkest point', 72, 30, 'The biggest loss of the series.'), B('Finale', 92, 95, 'Everything the series promised, paid off.'),
+  ] },
+  blank: { label: 'My own (blank)', beats: [] },
+};
+
+export function makeBeats(key, project) {
+  const st = STRUCTURES[key] || STRUCTURES.blank;
+  if (key === 'serial' && project && project.columns) {
+    const n = project.columns.length || 1;
+    return project.columns.map((c, i) => ({ id: uid(), name: `${project.labels.column} ${numeral(project, i)}: hook and cliffhanger`, text: '', hint: 'What pulls readers in, and what makes them come back next time.',
+      pct: Math.round(((i + 0.5) / n) * 100), tension: 40 + ((i % 2) ? 25 : 0), colId: c.id, parent: null }));
+  }
+  return (st.beats || []).map((b) => ({ id: uid(), name: b.name, text: '', hint: b.hint, pct: b.pct, tension: b.tension, colId: null, parent: null }));
+}
+
+export function normalizeFlow(f, isSeries = false) {
+  f = f && typeof f === 'object' ? f : {};
+  for (const k of ['logline', 'theme', 'ending']) f[k] = typeof f[k] === 'string' ? f[k] : '';
+  f.structure = f.structure || (isSeries ? 'series' : 'three');
+  f.beats = Array.isArray(f.beats) ? f.beats : [];
+  for (const b of f.beats) {
+    b.id = b.id || uid(); b.name = b.name || ''; b.text = b.text || ''; b.hint = b.hint || '';
+    b.pct = Math.max(0, Math.min(100, Number.isFinite(+b.pct) ? +b.pct : 50));
+    b.tension = Math.max(0, Math.min(100, Number.isFinite(+b.tension) ? +b.tension : 50));
+    b.colId = b.colId || null; b.parent = b.parent || null;
+  }
+  f.beats.sort((a, b) => a.pct - b.pct);
+  return f;
+}

@@ -63,6 +63,7 @@ const ICONS = {
   words: '<path d="M4 6h16M4 12h16M4 18h10"/>',
   spark: '<path d="M13 3L5 13h6l-1 8 8-10h-6z"/>',
   user: '<circle cx="12" cy="8" r="4"/><path d="M4 21c1.5-4 4.5-6 8-6s6.5 2 8 6"/>',
+  flow: '<path d="M3 17c3-6 5-9 8-9s4 6 7 6 3-4 3-4"/><circle cx="8" cy="10" r="1.5"/><circle cx="17" cy="14" r="1.5"/>',
   more: '<circle cx="5" cy="12" r="1.3"/><circle cx="12" cy="12" r="1.3"/><circle cx="19" cy="12" r="1.3"/>',
 };
 

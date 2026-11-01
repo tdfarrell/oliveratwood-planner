@@ -1,7 +1,7 @@
 import { h, append, clear, icon, openDialog, choose, confirmDanger, ask, toast, autosize } from './dom.js';
 import { TEMPLATES, PALETTE, FIELD_TYPES, STATUSES, STATUS_SHORT, uid, slugify, numeral, roman, normalize, valueText, actsOn, syncActs,
   prepare, newSeries, newBook, importProject, findDuplicates, mergeEntities, LINE_COLORS, LINK_KINDS,
-  GAME_EVENTS, blankSheet, applyEvent, describeEvent, cloneSheet } from './model.js';
+  GAME_EVENTS, blankSheet, applyEvent, describeEvent, cloneSheet, STRUCTURES, makeBeats } from './model.js';
 import { ServerStore, LocalStore, unsaved } from './store.js';
 import { KINDS, FLAVORS, kindForType, generate } from './names.js';
 
@@ -470,6 +470,7 @@ function render() {
     document.title = `${series.title} · Planner`;
     tabs = [
       ['timeline', 'Timeline', 'timeline', shref()],
+      ['flow', 'Story flow', 'flow', shref('flow')],
       gameOn() ? ['progress', 'Progression', 'spark', shref('progress')] : null,
       ['books', 'Books', 'book', shref('books')],
       ['world', 'Shared world', 'globe', shref('world')],
@@ -483,11 +484,13 @@ function render() {
     else if (tab === 'continuity') main = viewContinuity(p);
     else if (tab === 'settings') main = viewSeriesSettings(series);
     else if (tab === 'progress' && gameOn()) main = viewProgression(p);
+    else if (tab === 'flow') main = viewSeriesArc(series);
     else { activeTab = 'timeline'; main = viewTimeline(series); }
     crumbs = [h('a', { class: 'top__project', href: shref() }, series.title), h('span', { class: 'pill pill--series' }, 'Series')];
   } else {
     document.title = `${p.title} · Planner`;
     tabs = [
+      ['flow', 'Story flow', 'flow', phref('flow')],
       ['grid', 'Grid', 'grid', phref()],
       gameOn() ? ['progress', 'Progression', 'spark', phref('progress')] : null,
       ['world', series ? 'Shared world' : 'World', 'globe', phref('world')],
@@ -501,6 +504,7 @@ function render() {
     else if (tab === 'continuity') main = viewContinuity(p);
     else if (tab === 'project') main = viewProject(p);
     else if (tab === 'progress' && gameOn()) main = viewProgression(p);
+    else if (tab === 'flow') main = viewFlow(p);
     else { activeTab = 'grid'; main = viewGrid(p); }
     crumbs = series
       ? [h('a', { class: 'top__project', href: shref() }, series.title), h('span', { class: 'crumb-sep', 'aria-hidden': 'true' }, '›'), h('a', { class: 'top__book', href: phref() }, p.title)]
@@ -508,6 +512,7 @@ function render() {
   }
 
   const wide = activeTab === 'grid' || activeTab === 'timeline' || activeTab === 'progress';
+  if (activeTab !== 'grid') S.flowSel = null;
   const shell = h('div', { class: 'page' + (wide ? ' page--grid' : '') },
     h('header', { class: 'top' },
       brand(),
@@ -691,6 +696,10 @@ function viewGrid(p) {
       })),
     h('label', { class: 'check' }, h('input', { type: 'checkbox', checked: S.compact, onchange: (e) => { S.compact = e.target.checked; render(); } }), ' Titles only'),
     h('span', { class: 'spacer' }),
+    p.flow.beats.length ? [
+      h('button', { class: 'tl-toggle' + (flowPref('ribbon') ? ' is-on' : ''), type: 'button', 'aria-pressed': String(flowPref('ribbon')), onclick: () => { setFlowPref('ribbon', !flowPref('ribbon')); render(); } }, '◆ Beats on grid'),
+      h('button', { class: 'tl-toggle' + (flowPref('panel') ? ' is-on' : ''), type: 'button', 'aria-pressed': String(flowPref('panel')), onclick: () => { setFlowPref('panel', !flowPref('panel')); render(); } }, 'Story flow panel'),
+    ] : null,
     actsOn(p) ? h('button', { class: 'btn btn--sm', type: 'button', onclick: addAct }, icon('plus'), ` ${p.labels.act}`) : null,
     h('button', { class: 'btn btn--sm', type: 'button', onclick: () => addColumn() }, icon('plus'), ` ${p.labels.column}`),
     h('button', { class: 'btn btn--sm', type: 'button', onclick: addRow }, icon('plus'), ` ${p.labels.row}`));
@@ -706,6 +715,9 @@ function viewGrid(p) {
     p.acts.forEach((a, i) => grid.append(actHeader(p, a, i)));
     grid.append(h('button', { class: 'grid__addact', type: 'button', onclick: addAct, title: `Add ${lower(p.labels.act)}`, 'aria-label': `Add ${lower(p.labels.act)}` }, icon('plus')));
   }
+  if (p.flow.beats.length && flowPref('ribbon')) {
+    grid.append(h('div', { class: 'grid__beatlab' }, 'Beats'), beatRibbon(p, slots), h('div', {}));
+  }
   grid.append(h('div', { class: 'grid__corner' }, h('span', {}, `${p.labels.row}s`), h('span', { class: 'muted' }, ` / ${p.labels.column}s`)));
   for (const sl of slots) grid.append(sl.c ? colHeader(p, sl.c, colIndex(sl.c.id)) : emptyActHead(p, sl.act));
   grid.append(h('button', { class: 'grid__addcol', type: 'button', onclick: () => addColumn(), 'aria-label': `Add ${lower(p.labels.column)}` }, icon('plus')));
@@ -719,7 +731,8 @@ function viewGrid(p) {
   const empty = !p.cards.length && p.rows.length && p.columns.length
     ? h('p', { class: 'hint' }, `Each column is a ${lower(p.labels.column)}, each row a ${lower(p.labels.row)}. Click + in any square to add a scene card, then drag cards around as the story changes. Click a ${lower(p.labels.column)}’s header to add its teaser, recap and notes.`)
     : null;
-  return [toolbar, empty, h('div', { class: 'grid-scroll' }, grid)];
+  const panel = p.flow.beats.length && flowPref('panel') ? flowPanel(p) : null;
+  return [toolbar, empty, panel ? h('div', { class: 'grid-wrap' }, h('div', { class: 'grid-scroll' }, grid), panel) : h('div', { class: 'grid-scroll' }, grid)];
 }
 
 function colHeader(p, c, i) {
@@ -908,8 +921,9 @@ function cell(p, c, r) {
 
 function cardEl(p, k, r) {
   const ents = k.entityIds.map(entity).filter(Boolean);
-  const dim = (S.highlight && !k.entityIds.includes(S.highlight)) || (S.statusFilter && k.status !== S.statusFilter);
-  const hit = !dim && (S.highlight || S.statusFilter);
+  const dim = (S.highlight && !k.entityIds.includes(S.highlight)) || (S.statusFilter && k.status !== S.statusFilter) || (S.flowSel && k.beatId !== S.flowSel);
+  const hit = !dim && (S.highlight || S.statusFilter || S.flowSel);
+  const beat = k.beatId ? p.flow.beats.find((b) => b.id === k.beatId) : null;
   const payoffOf = scopeCards().find((x) => x.payoffId === k.id);
   const payoff = k.setup && k.payoffId ? findCard(k.payoffId) : null;
   const where = (x) => { const ci = cardInfo(x); return otherBook(ci.b) ? ci.b.title : ci.num; };
@@ -921,11 +935,21 @@ function cardEl(p, k, r) {
     onkeydown: (e) => { if (e.key === 'Enter') editCard(k.id); },
     ondragstart: (e) => { S.drag = k.id; e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/plain', k.id); requestAnimationFrame(() => el.classList.add('is-dragging')); },
     ondragend: () => { S.drag = null; el.classList.remove('is-dragging'); },
+    ondragover: (e) => { if (S.dragBeat) { e.preventDefault(); e.stopPropagation(); el.classList.add('is-beat-over'); } },
+    ondragleave: () => el.classList.remove('is-beat-over'),
+    ondrop: (e) => {
+      if (!S.dragBeat) return;
+      e.preventDefault(); e.stopPropagation();
+      const id = S.dragBeat; S.dragBeat = null;
+      change(() => { k.beatId = id; });
+      toast(`Tagged “${k.title || 'Untitled scene'}” with ${p.flow.beats.find((b) => b.id === id)?.name || 'that beat'}`);
+    },
   },
   h('div', { class: 'card__top' },
     h('h3', { class: 'card__title' + (k.title ? '' : ' muted') }, k.title || 'Untitled scene'),
     h('span', { class: 'card__status', title: st[1] }, STATUS_SHORT[k.status] || st[1])),
   !S.compact && k.summary ? h('p', { class: 'card__sum' }, k.summary) : null,
+  beat ? h('span', { class: 'card__beat', title: beat.text || beat.hint || '' }, '◆ ' + (beat.name || 'Untitled beat')) : null,
   gameOn() && (k.game || []).length ? h('div', { class: 'card__game' }, icon('spark'), (() => {
     const lvs = k.game.filter((x) => x.kind === 'level');
     const ids = [...new Set(k.game.map((x) => x.who))];
@@ -1081,6 +1105,7 @@ function editCard(id, isNew = false, after = null) {
       p.types.length ? entityPicker(p, () => k().entityIds, (ids) => upd((c) => { c.entityIds = ids; }))
         : h('p', { class: 'muted small' }, 'Add entry types (characters, places…) in the Project tab to link them here.')),
     p.cardFields.map((f) => fieldInput(p, f, () => k().fields[f.id], (v) => upd((c) => { c.fields[f.id] = v; }))),
+    p.flow && p.flow.beats.length ? beatBox(p, k, upd, () => d) : null,
     wordsBox(p, k, upd),
     gameOn() ? gameBox(p, k, upd) : null,
     h('div', { class: 'field' }, h('span', { class: 'field__label' }, 'Setup & payoff'), setupBox),
@@ -2335,7 +2360,9 @@ function viewTimeline(series) {
     h('div', { class: 'tl-seg', role: 'group', 'aria-label': 'Order' }, seg('world', 'In-world time'), seg('reading', 'Reading order')),
     h('div', { class: 'tl-toggles', role: 'group', 'aria-label': 'Show' },
       h('span', { class: 'tl-label' }, 'Show'),
-      toggle('books', 'Books'), usedTypes.map((t) => toggle(t.id, t.name)), toggle('threads', 'Threads')),
+      toggle('books', 'Books'), usedTypes.map((t) => toggle(t.id, t.name)), toggle('threads', 'Threads'),
+      h('button', { class: 'tl-toggle' + (T.showBeats ? ' is-on' : ''), type: 'button', 'aria-pressed': String(!!T.showBeats), title: 'Show the series arc and each book’s beats',
+        onclick: () => { T.showBeats = !T.showBeats; render(); } }, '◆ Beats')),
     h('span', { class: 'spacer' }),
     h('div', { class: 'tl-legend' },
       series.groups.map((g) => h('span', { class: 'tl-legend__i' }, h('span', { class: 'tl-sw', style: { background: g.color } }), g.title)),
@@ -2399,12 +2426,14 @@ function viewTimeline(series) {
     return h('button', { class: `tl-chip tl-chip--${it.stage}` + (hit(it) ? '' : ' is-dim'), type: 'button', title: tip,
       style: { left: it.x - 9 + 'px', top: it.top + 'px', '--c': c }, onclick: () => openCard(it.k.id) },
     h('span', { class: 'tl-chip__dot st-' + it.k.status }),
-    h('span', { class: 'tl-chip__t' }, it.k.title || 'Untitled scene'),
+    h('span', { class: 'tl-chip__t' }, T.showBeats && it.k.beatId ? '◆ ' : '', it.k.title || 'Untitled scene'),
     gameOn() && (it.k.game || []).length ? icon('spark', 'tl-chip__ico') : null,
     ((it.k.links || []).length || items.some((o) => (o.k.links || []).some((l) => l.id === it.k.id))) && order !== 'world' ? icon('link', 'tl-chip__ico') : null);
   };
 
   const parts = [gridLayer, ruler];
+
+  if (T.showBeats) parts.push(...timelineBeats(series, { shown, order, TW, ruler1, books, colorOf, labelCell, track }));
 
   if (!T.hide.books) {
     parts.push(sectionHead('Books'));
@@ -3025,6 +3054,405 @@ function progressGrid(who, pr, tpl, fromStart) {
         h('span', { class: 'pg-col__v' }, c.label), h('span', { class: 'pg-col__w' }, c.sub),
         c.step ? h('button', { class: 'linkbtn pg-col__s', type: 'button', onclick: () => openCard(c.step.k.id) }, c.step.k.title || 'Untitled scene') : null)))),
     h('tbody', {}, body.length ? body : h('tr', {}, h('td', { class: 'pg-td', colspan: String(cols.length + 1) }, 'Nothing changes here yet.')))));
+}
+
+// The series arc and each book's beats, as rows on the series timeline.
+function timelineBeats(series, { shown, order, TW, ruler1, books, colorOf, labelCell, track }) {
+  const marks = (list) => {
+    // Stagger labels over two rows so neighbours don't collide.
+    list.sort((a, b) => a.x - b.x);
+    let lastTop = -1e9, lastBot = -1e9;
+    for (const m of list) {
+      if (m.x - lastTop >= 150) { m.row = 0; lastTop = m.x; } else if (m.x - lastBot >= 150) { m.row = 1; lastBot = m.x; } else { m.row = m.x - lastTop > m.x - lastBot ? 0 : 1; if (m.row) lastBot = m.x; else lastTop = m.x; }
+    }
+    return list.map((m) => [
+      m.band ? h('span', { class: 'tlb-band', style: { left: m.x + 'px', width: m.band + 'px', '--c': m.color } }) : null,
+      h(m.href ? 'a' : 'span', { class: 'tlb-mark' + (m.hollow ? ' is-hollow' : ''), href: m.href || null, title: m.tip, style: { left: m.x + 'px', '--c': m.color } },
+        h('span', { class: 'tlb-dia' }), h('span', { class: 'tlb-lab', style: { top: (m.row ? 30 : 4) + 'px' } }, m.label)),
+    ]);
+  };
+  const xsFor = (ids) => shown.filter((it) => it.k.beatId && ids.has(it.k.beatId)).map((it) => it.x);
+  const bookFlow = (b) => href(`s/${encodeURIComponent(S.slug)}/b/${encodeURIComponent(b.id)}/flow`);
+  const seg = (b) => (order === 'reading' ? ruler1[books.indexOf(b)] : null);
+
+  const arc = series.flow.beats.map((sb, i) => {
+    const ids = new Set(books.flatMap((b) => b.flow.beats.filter((x) => x.parent === sb.id).map((x) => x.id)));
+    const xs = xsFor(ids);
+    const name = `${i + 1}. ${sb.name || 'Untitled'}`;
+    if (xs.length) {
+      const a = Math.min(...xs), z = Math.max(...xs);
+      return { x: a, band: z > a ? z - a + TL.CHIP - 18 : 0, color: 'var(--accent)', label: name, tip: `${name} · ${plural(xs.length, 'scene')}`, href: shref('flow') };
+    }
+    return order === 'reading' ? { x: (sb.pct / 100) * TW, hollow: true, color: 'var(--accent)', label: name, tip: `${name} · planned, no scenes yet`, href: shref('flow') } : null;
+  }).filter(Boolean);
+
+  const bookMarks = books.flatMap((b) => b.flow.beats.map((x) => {
+    const xs = xsFor(new Set([x.id]));
+    const tip = `${b.title || 'Untitled book'} · ${x.name || 'Untitled beat'}`;
+    if (xs.length) return { x: Math.min(...xs), color: colorOf(b), label: x.name || 'Untitled beat', tip: tip + ` · ${plural(xs.length, 'scene')}`, href: bookFlow(b) };
+    const sg = seg(b);
+    return sg ? { x: sg.left + 24 + (x.pct / 100) * Math.max(0, sg.width - 60), hollow: true, color: colorOf(b), label: x.name || 'Untitled beat', tip: tip + ' · planned, no scenes yet', href: bookFlow(b) } : null;
+  }).filter(Boolean));
+
+  if (!arc.length && !bookMarks.length) {
+    return [h('div', { class: 'tl-row tl-row--head tlb' }, labelCell('tl-lab--head', 'Beats'),
+      track(40, h('span', { class: 'tlb-empty' }, 'No beats yet. Plan them in Story flow. ', h('a', { href: shref('flow') }, 'Open Story flow'))))];
+  }
+  return [
+    h('div', { class: 'tl-row tl-row--head tlb' }, labelCell('tl-lab--head', 'Beats')),
+    h('div', { class: 'tl-row tlb' }, labelCell('tl-lab--book', h('span', { class: 'tl-lab__text' }, h('span', { class: 'tl-lab__title' }, 'Series arc'), h('span', { class: 'tl-lab__meta' }, plural(series.flow.beats.length, 'beat')))), track(58, marks(arc))),
+    h('div', { class: 'tl-row tlb' }, labelCell('tl-lab--book', h('span', { class: 'tl-lab__text' }, h('span', { class: 'tl-lab__title' }, 'Book beats'), h('span', { class: 'tl-lab__meta' }, order === 'world' ? 'Placed by their scenes' : 'Hollow: no scenes yet'))), track(58, marks(bookMarks))),
+  ];
+}
+
+// ======================================================================
+// Story flow
+// ======================================================================
+
+function flowPref(k) {
+  if (!S.flowPrefs) { try { S.flowPrefs = JSON.parse(localStorage.getItem('planner:flow') || '{}'); } catch { S.flowPrefs = {}; } }
+  return S.flowPrefs[k] !== undefined ? S.flowPrefs[k] : k === 'ribbon';
+}
+function setFlowPref(k, v) {
+  flowPref(k); S.flowPrefs[k] = v;
+  try { localStorage.setItem('planner:flow', JSON.stringify(S.flowPrefs)); } catch { /* blocked */ }
+}
+
+const beatScenes = (p, b) => p.cards.filter((k) => k.beatId === b.id);
+// Index of the part a beat is planned for: chosen explicitly, or from its position.
+function plannedCol(p, b) {
+  if (b.colId) { const i = p.columns.findIndex((c) => c.id === b.colId); if (i >= 0) return i; }
+  const n = p.columns.length;
+  return n ? Math.min(n - 1, Math.floor((b.pct / 100) * n)) : -1;
+}
+const colLabel = (p, i) => (i >= 0 ? `${p.labels.column} ${numeral(p, i)}` : '—');
+// Book beats that move a series beat forward.
+const childBeats = (series, sb) => series.books.flatMap((b) => b.flow.beats.filter((x) => x.parent === sb.id).map((x) => ({ b, x })));
+const seriesBeatDone = (series, sb) => childBeats(series, sb).some(({ b, x }) => beatScenes(b, x).length);
+
+// Smooth curve through points (Catmull-Rom as cubic Béziers).
+function curvePath(pts) {
+  if (!pts.length) return '';
+  if (pts.length === 1) return `M${pts[0][0]},${pts[0][1]}`;
+  let d = `M${pts[0][0]},${pts[0][1]}`;
+  for (let i = 0; i < pts.length - 1; i++) {
+    const p0 = pts[i - 1] || pts[i], p1 = pts[i], p2 = pts[i + 1], p3 = pts[i + 2] || p2;
+    d += ` C${p1[0] + (p2[0] - p0[0]) / 6},${p1[1] + (p2[1] - p0[1]) / 6} ${p2[0] - (p3[0] - p1[0]) / 6},${p2[1] - (p3[1] - p1[1]) / 6} ${p2[0]},${p2[1]}`;
+  }
+  return d;
+}
+
+// The tension curve with draggable beats. extra: [{ d, color }] faint paths drawn behind.
+function shapeEl(beats, { done, extra = [], bands = [], below = null, diamond = false }) {
+  const H = 220, TOP = 20, PH = 170;
+  const X = (pct) => pct * 10, Y = (t) => TOP + (1 - t / 100) * PH;
+  const svgNS = 'http://www.w3.org/2000/svg';
+  const svg = document.createElementNS(svgNS, 'svg');
+  svg.setAttribute('viewBox', `0 0 1000 ${H}`); svg.setAttribute('preserveAspectRatio', 'none');
+  svg.setAttribute('class', 'shape__svg'); svg.setAttribute('aria-hidden', 'true');
+  for (const bd of bands) {
+    const r = document.createElementNS(svgNS, 'rect');
+    r.setAttribute('x', X(bd.from)); r.setAttribute('y', 0); r.setAttribute('width', X(bd.to - bd.from)); r.setAttribute('height', H);
+    r.setAttribute('class', 'shape__band'); svg.append(r);
+  }
+  for (const ex of extra) {
+    const pe = document.createElementNS(svgNS, 'path'); pe.setAttribute('d', ex.d); pe.setAttribute('class', 'shape__extra'); pe.style.stroke = ex.color; svg.append(pe);
+  }
+  const path = document.createElementNS(svgNS, 'path');
+  path.setAttribute('class', 'shape__line');
+  const draw = () => path.setAttribute('d', curvePath([...beats].sort((a, b) => a.pct - b.pct).map((b) => [X(b.pct), Y(b.tension)])));
+  draw();
+  svg.append(path);
+  const box = h('div', { class: 'shape' }, svg);
+  for (const b of beats) {
+    const isDone = done(b);
+    const dot = h('button', { class: 'shape__dot' + (isDone ? ' is-done' : '') + (diamond ? ' is-diamond' : ''), type: 'button',
+      title: `${b.name || 'Untitled beat'} · ${Math.round(b.pct)}% · drag to move`, 'aria-label': `${b.name || 'Untitled beat'}: drag to move or change tension` });
+    const lab = h('span', { class: 'shape__lab' + (b.pct < 8 ? ' is-start' : b.pct > 92 ? ' is-end' : '') }, b.name || 'Untitled beat');
+    const wrap = h('div', { class: 'shape__beat', style: { left: b.pct + '%', top: Y(b.tension) + 'px' } }, dot, lab);
+    dot.addEventListener('pointerdown', (e) => {
+      e.preventDefault();
+      dot.setPointerCapture(e.pointerId);
+      const rect = box.getBoundingClientRect();
+      const move = (ev) => {
+        b.pct = Math.max(0, Math.min(100, Math.round(((ev.clientX - rect.left) / rect.width) * 1000) / 10));
+        b.tension = Math.max(0, Math.min(100, Math.round((1 - (ev.clientY - rect.top - TOP) / PH) * 100)));
+        wrap.style.left = b.pct + '%'; wrap.style.top = Y(b.tension) + 'px';
+        draw();
+      };
+      const up = () => { dot.removeEventListener('pointermove', move); dot.removeEventListener('pointerup', up); change(() => {}); };
+      dot.addEventListener('pointermove', move);
+      dot.addEventListener('pointerup', up);
+    });
+    dot.addEventListener('keydown', (e) => {
+      const step = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, 5], ArrowDown: [0, -5] }[e.key];
+      if (!step) return;
+      e.preventDefault();
+      change(() => { b.pct = Math.max(0, Math.min(100, b.pct + step[0])); b.tension = Math.max(0, Math.min(100, b.tension + step[1])); });
+    });
+    box.append(wrap);
+  }
+  return h('div', { class: 'shape-wrap' }, box, below);
+}
+
+function flowSwitch(series, current) {
+  return h('div', { class: 'flow-switch', role: 'group', 'aria-label': 'Which story flow' },
+    h('a', { class: 'flow-switch__b' + (current === 'series' ? ' is-on' : ''), href: shref('flow'), 'aria-current': current === 'series' ? 'page' : null }, 'Series arc'),
+    series.books.map((b) => h('a', { class: 'flow-switch__b' + (current === b.id ? ' is-on' : ''), href: href(`s/${encodeURIComponent(S.slug)}/b/${encodeURIComponent(b.id)}/flow`), 'aria-current': current === b.id ? 'page' : null }, b.title || 'Untitled book')));
+}
+
+function flowBasics(f, fields) {
+  return h('section', { class: 'flow-basics' }, fields.map(([key, label, ph]) => h('label', { class: 'flow-basic' },
+    h('span', { class: 'field__label' }, label),
+    autosize(h('textarea', { class: 'flow-basic__t', rows: 2, value: f[key], placeholder: ph, oninput: (e) => change(() => { f[key] = e.target.value; }, { render: false }) })))));
+}
+
+function structurePicker(p, f, isSeries) {
+  const keys = Object.keys(STRUCTURES).filter((k) => (isSeries ? ['series', 'three', 'blank'] : Object.keys(STRUCTURES).filter((x) => x !== 'series')).includes(k));
+  return h('label', { class: 'flow-structure' }, h('span', { class: 'field__label' }, f.beats.length ? 'Replace with a structure' : 'Start from'),
+    h('select', { class: 'input', onchange: async (e) => {
+      const key = e.target.value;
+      if (!key) return;
+      if (f.beats.length && !(await confirmDanger(`Replace your ${plural(f.beats.length, 'beat')}?`, `They’ll be replaced with “${STRUCTURES[key].label}”. Scenes tagged with the old beats lose their tag. The backups keep the old version.`, 'Replace'))) { e.target.value = ''; return; }
+      change(() => { f.structure = key; f.beats = makeBeats(key, p); });
+    } }, h('option', { value: '' }, f.beats.length ? 'Choose…' : 'Choose a structure…'), keys.map((k) => h('option', { value: k }, STRUCTURES[k].label))));
+}
+
+function addBeat(f) {
+  const last = f.beats[f.beats.length - 1];
+  const b = { id: uid(), name: '', text: '', hint: '', pct: last ? Math.min(100, last.pct + 5) : 10, tension: 50, colId: null, parent: null };
+  change(() => { f.beats.push(b); });
+  requestAnimationFrame(() => document.querySelector(`[data-beat="${b.id}"] .beat__name`)?.focus());
+}
+
+function newSceneForBeat(p, b) {
+  const ci = plannedCol(p, b);
+  if (ci < 0 || !p.rows.length) { toast(`Add a ${lower(p.labels.column)} and a ${lower(p.labels.row)} on the grid first.`); return; }
+  const id = uid();
+  change(() => { p.cards.push({ id, colId: p.columns[ci].id, rowId: p.rows[0].id, title: '', summary: '', notes: '', status: 'idea', entityIds: [], setup: false, payoffId: null, fields: {}, links: [], when: null, game: [], words: null, wordGoal: null, beatId: b.id }); });
+  editCard(id, true);
+}
+
+// ---------- A project's or book's flow ----------
+
+function viewFlow(p) {
+  const f = p.flow;
+  const series = isSeries() ? S.project : null;
+  const n = f.beats.filter((b) => beatScenes(p, b).length).length;
+  const head = h('div', { class: 'flow-head' },
+    h('div', {},
+      h('h1', { class: 'display display--xl' }, 'Story flow'),
+      h('p', { class: 'muted' }, 'The shape of the whole story before the scenes. Plan the beats here; the grid keeps them in view while you build.')),
+    h('span', { class: 'spacer' }),
+    structurePicker(p, f, false));
+  const parts = h('div', { class: 'shape__parts' }, p.columns.map((c, i) => h('span', {}, colLabel(p, i))));
+  const nCols = p.columns.length || 1;
+  const actBands = actsOn(p) ? p.acts.map((a, ai) => {
+    const idx = p.columns.map((c, i) => (c.actId === a.id ? i : -1)).filter((i) => i >= 0);
+    return idx.length && ai % 2 === 0 ? { from: (idx[0] / nCols) * 100, to: ((idx[idx.length - 1] + 1) / nCols) * 100 } : null;
+  }).filter(Boolean) : [];
+  const list = h('section', { class: 'beats' },
+    h('div', { class: 'beats__head' },
+      h('h2', { class: 'display' }, 'Beats'),
+      h('span', { class: 'muted' }, f.beats.length ? `${n} of ${f.beats.length} have scenes` : ''),
+      h('span', { class: 'spacer' }),
+      h('button', { class: 'btn', type: 'button', onclick: () => addBeat(f) }, icon('plus'), ' Beat')),
+    f.beats.length ? f.beats.map((b, i) => beatEditor(p, f, b, i, series)) : h('p', { class: 'muted' }, 'No beats yet. Start from a structure above, or add your own.'));
+  return h('div', { class: 'wrap flow' },
+    series ? flowSwitch(series, p.id) : null,
+    head,
+    flowBasics(f, [['logline', 'Logline', 'One or two sentences: who, what they want, what stands in the way'], ['theme', 'Theme', 'What the story is really about'], ['ending', 'Where it lands', 'How it ends, so every beat can aim there']]),
+    f.beats.length ? h('section', { class: 'flow-card' },
+      h('div', { class: 'flow-card__head' }, h('h2', { class: 'display' }, 'Shape'),
+        h('span', { class: 'muted small' }, 'Drag a beat left or right to move it, up or down to set its tension. Arrow keys work too.'),
+        h('span', { class: 'spacer' }),
+        h('span', { class: 'legend-i' }, h('span', { class: 'shape__key is-done' }), 'Has scenes'),
+        h('span', { class: 'legend-i' }, h('span', { class: 'shape__key' }), 'No scenes yet')),
+      shapeEl(f.beats, { done: (b) => beatScenes(p, b).length > 0, bands: actBands, below: parts })) : null,
+    list);
+}
+
+function beatEditor(p, f, b, i, series) {
+  const upd = (fn) => change(fn, { render: false });
+  const scenes = beatScenes(p, b);
+  const auto = plannedCol(p, { ...b, colId: null });
+  return h('article', { class: 'beat', 'data-beat': b.id },
+    h('div', { class: 'beat__num' }, h('span', { class: 'beat__n' }, String(i + 1)), h('span', { class: 'beat__pct' }, Math.round(b.pct) + '%')),
+    h('div', { class: 'beat__body' },
+      h('input', { class: 'beat__name', value: b.name, placeholder: 'Name this beat', 'aria-label': 'Beat name', oninput: (e) => upd(() => { b.name = e.target.value; }) }),
+      autosize(h('textarea', { class: 'beat__text', rows: 2, value: b.text, placeholder: 'What happens at this point in the story', 'aria-label': 'What happens', oninput: (e) => upd(() => { b.text = e.target.value; }) })),
+      h('input', { class: 'beat__hint', value: b.hint, placeholder: 'What this beat is for (optional)', 'aria-label': 'What this beat is for', oninput: (e) => upd(() => { b.hint = e.target.value; }) }),
+      h('div', { class: 'beat__meta' },
+        h('label', { class: 'beat__sel' }, h('span', { class: 'muted small' }, 'Planned for'),
+          h('select', { class: 'input input--sm', onchange: (e) => change(() => { b.colId = e.target.value || null; }) },
+            h('option', { value: '' }, `Auto (${colLabel(p, auto)})`),
+            p.columns.map((c, ci) => h('option', { value: c.id, selected: b.colId === c.id }, colLabel(p, ci) + (c.title ? ': ' + c.title : ''))))),
+        series ? h('label', { class: 'beat__sel' }, h('span', { class: 'muted small' }, 'Moves the series beat'),
+          h('select', { class: 'input input--sm', onchange: (e) => change(() => { b.parent = e.target.value || null; }) },
+            h('option', { value: '' }, '— None —'),
+            series.flow.beats.map((sb, si) => h('option', { value: sb.id, selected: b.parent === sb.id }, `${si + 1}. ${sb.name || 'Untitled'}`)))) : null)),
+    h('div', { class: 'beat__side' },
+      h('span', { class: 'beat__status' + (scenes.length ? ' is-done' : '') }, scenes.length ? plural(scenes.length, 'scene') : 'No scenes yet'),
+      scenes.map((k) => h('button', { class: 'beat__scene', type: 'button', onclick: () => openCard(k.id) }, `${cardInfo(k).num} · ${k.title || 'Untitled scene'}`)),
+      h('button', { class: 'btn btn--ghost btn--sm beat__add', type: 'button', onclick: () => newSceneForBeat(p, b) }, icon('plus'), ' Scene for this beat'),
+      h('button', { class: 'iconbtn beat__del', type: 'button', 'aria-label': 'Delete beat', title: 'Delete beat', onclick: async () => {
+        if (!(await confirmDanger(`Delete “${b.name || 'this beat'}”?`, scenes.length ? `${plural(scenes.length, 'scene')} lose${scenes.length === 1 ? 's' : ''} this tag. The scenes stay.` : 'No scenes use it.'))) return;
+        change(() => { f.beats = f.beats.filter((x) => x !== b); for (const k of p.cards) if (k.beatId === b.id) k.beatId = null; });
+      } }, icon('trash'))));
+}
+
+// ---------- The series arc ----------
+
+function viewSeriesArc(series) {
+  const f = series.flow;
+  const books = series.books;
+  // Each book's share of the series, by its number of scenes (at least a little).
+  const weights = books.map((b) => Math.max(3, b.cards.length));
+  const total = weights.reduce((a, b) => a + b, 0) || 1;
+  let acc = 0;
+  const seg = books.map((b, i) => { const from = (acc / total) * 100; acc += weights[i]; return { b, from, to: (acc / total) * 100 }; });
+  const extra = seg.filter(({ b }) => b.flow.beats.length > 1).map(({ b, from, to }) => {
+    const pts = [...b.flow.beats].sort((x, y) => x.pct - y.pct).map((x) => [(from + (x.pct / 100) * (to - from)) * 10, 20 + (1 - x.tension / 100) * 170 * 0.7 + 50]);
+    return { d: curvePath(pts), color: (series.groups.find((g) => g.id === b.groupId) || series.groups[0]).color };
+  });
+  const strip = h('div', { class: 'arc-strip' }, seg.map(({ b, from, to }, i) => h('a', { class: 'arc-strip__b', href: href(`s/${encodeURIComponent(S.slug)}/b/${encodeURIComponent(b.id)}/flow`),
+    style: { flexGrow: String(to - from), background: (series.groups.find((g) => g.id === b.groupId) || series.groups[0]).color } }, `${i + 1}. ${b.title || 'Untitled book'}`)));
+  const unassigned = books.flatMap((b) => b.flow.beats.filter((x) => !x.parent || !f.beats.some((sb) => sb.id === x.parent)).map((x) => ({ b, x })));
+  const chip = (b, x) => h('a', { class: 'arc-chip' + (beatScenes(b, x).length ? ' is-done' : ''), href: href(`s/${encodeURIComponent(S.slug)}/b/${encodeURIComponent(b.id)}/flow`), draggable: 'true',
+    title: (x.text || x.hint || '') + ' (drag onto another series beat to move it)',
+    ondragstart: (e) => { S.dragArc = { b: b.id, x: x.id }; e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/plain', x.id); },
+    ondragend: () => { S.dragArc = null; } }, h('span', { class: 'arc-chip__dot' }), x.name || 'Untitled beat');
+  const dropOn = (el, parentId) => {
+    el.addEventListener('dragover', (e) => { if (S.dragArc) { e.preventDefault(); el.classList.add('is-over'); } });
+    el.addEventListener('dragleave', (e) => { if (!el.contains(e.relatedTarget)) el.classList.remove('is-over'); });
+    el.addEventListener('drop', (e) => {
+      if (!S.dragArc) return;
+      e.preventDefault(); el.classList.remove('is-over');
+      const { b, x } = S.dragArc; S.dragArc = null;
+      change(() => { const bk = books.find((y) => y.id === b); const bt = bk && bk.flow.beats.find((y) => y.id === x); if (bt) bt.parent = parentId; });
+    });
+    return el;
+  };
+  const groupByBook = (pairs) => {
+    const m = new Map();
+    for (const pr of pairs) { if (!m.has(pr.b)) m.set(pr.b, []); m.get(pr.b).push(pr.x); }
+    return [...m.entries()].map(([b, xs]) => h('div', { class: 'arc-book' },
+      h('span', { class: 'arc-book__name' }, h('span', { class: 'arc-book__sw', style: { background: (series.groups.find((g) => g.id === b.groupId) || series.groups[0]).color } }), b.title || 'Untitled book'),
+      h('div', { class: 'arc-book__chips' }, xs.map((x) => chip(b, x)))));
+  };
+  const upd = (fn) => change(fn, { render: false });
+  const nDone = f.beats.filter((sb) => seriesBeatDone(series, sb)).length;
+  return h('div', { class: 'wrap flow' },
+    flowSwitch(series, 'series'),
+    h('div', { class: 'flow-head' },
+      h('div', {}, h('h1', { class: 'display display--xl' }, 'Series arc'),
+        h('p', { class: 'muted' }, 'The story the whole series tells. Each book’s own beats sit under the series beat they move forward.')),
+      h('span', { class: 'spacer' }), structurePicker(series, f, true)),
+    flowBasics(f, [['logline', 'Series logline', 'The story all the books tell together'], ['theme', 'Theme', 'What the series is really about'], ['ending', 'Where it ends', 'The final image of the whole series']]),
+    h('section', { class: 'flow-card' },
+      h('div', { class: 'flow-card__head' }, h('h2', { class: 'display' }, 'Shape across the books'),
+        h('span', { class: 'muted small' }, 'Solid: the series arc. Faint lines: each book’s own shape, in reading order.')),
+      f.beats.length ? shapeEl(f.beats, { done: (sb) => seriesBeatDone(series, sb), extra, diamond: true, below: strip }) : h('div', {}, h('p', { class: 'muted' }, 'No series beats yet. Start from a structure above, or add your own.'), strip)),
+    h('section', { class: 'beats' },
+      h('div', { class: 'beats__head' }, h('h2', { class: 'display' }, 'Series beats'),
+        h('span', { class: 'muted' }, f.beats.length ? `${nDone} of ${f.beats.length} have scenes · drag a book beat onto a different series beat to move it` : ''),
+        h('span', { class: 'spacer' }),
+        h('button', { class: 'btn', type: 'button', onclick: () => addBeat(f) }, icon('plus'), ' Series beat')),
+      f.beats.map((sb, i) => dropOn(h('article', { class: 'beat beat--series', 'data-beat': sb.id },
+        h('div', { class: 'beat__num' }, h('span', { class: 'beat__diamond' + (seriesBeatDone(series, sb) ? ' is-done' : '') }, h('span', {}, String(i + 1)))),
+        h('div', { class: 'beat__body' },
+          h('input', { class: 'beat__name', value: sb.name, placeholder: 'Name this series beat', 'aria-label': 'Series beat name', oninput: (e) => upd(() => { sb.name = e.target.value; }) }),
+          autosize(h('textarea', { class: 'beat__text', rows: 2, value: sb.text, placeholder: 'What happens across the series at this point', oninput: (e) => upd(() => { sb.text = e.target.value; }) })),
+          h('div', { class: 'arc-nest' }, childBeats(series, sb).length ? groupByBook(childBeats(series, sb)) : h('span', { class: 'muted small' }, 'No book beats here yet. Drag one in, or pick this series beat in a book’s Story flow.'))),
+        h('div', { class: 'beat__side' },
+          h('button', { class: 'iconbtn beat__del', type: 'button', 'aria-label': 'Delete series beat', onclick: async () => {
+            if (!(await confirmDanger(`Delete “${sb.name || 'this series beat'}”?`, 'Book beats under it become unassigned. Nothing else changes.'))) return;
+            change(() => { f.beats = f.beats.filter((x) => x !== sb); for (const b of books) for (const x of b.flow.beats) if (x.parent === sb.id) x.parent = null; });
+          } }, icon('trash')))), sb.id)),
+      unassigned.length ? dropOn(h('article', { class: 'beat beat--loose' },
+        h('div', { class: 'beat__num' }),
+        h('div', { class: 'beat__body' }, h('h3', { class: 'beat__looseh' }, 'Not under a series beat yet'), h('div', { class: 'arc-nest' }, groupByBook(unassigned)))), null) : null));
+}
+
+// ---------- On the grid ----------
+
+function beatRibbon(p, slots) {
+  const n = slots.length;
+  const colToSlot = (ci) => slots.findIndex((sl) => sl.c && sl.c.id === p.columns[ci]?.id);
+  const lanes = [];
+  const chips = p.flow.beats.map((b, i) => {
+    const si = colToSlot(plannedCol(p, b));
+    if (si < 0) return null;
+    let lane = lanes.findIndex((l) => !l.includes(si));
+    if (lane < 0) { lanes.push([]); lane = lanes.length - 1; }
+    lanes[lane].push(si);
+    const done = beatScenes(p, b).length > 0;
+    const on = S.flowSel === b.id;
+    return h('button', { class: 'ribbon__b' + (done ? ' is-done' : '') + (on ? ' is-on' : ''), type: 'button', title: (b.text || b.hint || b.name) + (done ? '' : ' · no scenes yet'),
+      style: { gridColumn: `${si + 1}`, gridRow: `${lane + 1}` }, onclick: () => { S.flowSel = on ? null : b.id; render(); } },
+    h('span', { class: 'ribbon__n' }, String(i + 1)), b.name || 'Untitled beat');
+  });
+  return h('div', { class: 'ribbon', style: { gridColumn: `span ${n}`, gridTemplateColumns: `repeat(${n}, minmax(0, 1fr))` } }, chips);
+}
+
+function flowPanel(p) {
+  const f = p.flow;
+  const n = f.beats.filter((b) => beatScenes(p, b).length).length;
+  return h('aside', { class: 'fpanel', 'aria-label': 'Story flow' },
+    h('div', { class: 'fpanel__head' }, h('h2', { class: 'fpanel__t' }, 'Story flow'), h('a', { class: 'small', href: phref('flow') }, 'Open'),
+      h('button', { class: 'iconbtn', type: 'button', 'aria-label': 'Close panel', onclick: () => { setFlowPref('panel', false); render(); } }, icon('x'))),
+    f.logline ? h('p', { class: 'fpanel__log' }, f.logline) : null,
+    h('div', { class: 'fpanel__bar' }, h('span', { style: { width: (f.beats.length ? (n / f.beats.length) * 100 : 0) + '%' } })),
+    h('span', { class: 'muted small' }, `${n} of ${plural(f.beats.length, 'beat')} have scenes`),
+    h('ol', { class: 'fpanel__list' }, f.beats.map((b, i) => {
+      const sc = beatScenes(p, b).length;
+      const on = S.flowSel === b.id;
+      return h('li', {}, h('button', { class: 'fbeat' + (on ? ' is-on' : ''), type: 'button', draggable: 'true', 'aria-pressed': String(on),
+        ondragstart: (e) => { S.dragBeat = b.id; e.dataTransfer.effectAllowed = 'copy'; e.dataTransfer.setData('text/plain', b.name || 'beat'); },
+        ondragend: () => { S.dragBeat = null; document.querySelectorAll('.is-beat-over').forEach((x) => x.classList.remove('is-beat-over')); },
+        onclick: () => { S.flowSel = on ? null : b.id; render(); } },
+      h('span', { class: 'fbeat__top' },
+        h('span', { class: 'fbeat__mark' + (sc ? ' is-done' : '') }, sc ? '✓' : String(i + 1)),
+        h('span', { class: 'fbeat__name' }, b.name || 'Untitled beat'),
+        h('span', { class: 'fbeat__where' }, colLabel(p, plannedCol(p, b)))),
+      on ? [b.text ? h('span', { class: 'fbeat__text' }, b.text) : null, b.hint ? h('span', { class: 'fbeat__hint' }, b.hint) : null,
+        h('span', { class: 'fbeat__st' + (sc ? ' is-done' : '') }, sc ? plural(sc, 'scene') + ' highlighted' : 'No scenes yet')] : null));
+    })),
+    h('p', { class: 'muted small fpanel__foot' }, 'Click a beat to highlight its scenes. Drag a beat onto a card to tag it.'));
+}
+
+// ---------- On a scene card ----------
+
+function beatBox(p, k, upd, dlg) {
+  const box = h('section', { class: 'bbox', 'aria-label': 'Story beat' });
+  const draw = () => {
+    clear(box);
+    const c = k();
+    const beats = p.flow.beats;
+    const i = beats.findIndex((b) => b.id === c.beatId);
+    const b = beats[i];
+    const ci = cardInfo(c).i;
+    append(box, [
+      h('label', { class: 'field' }, h('span', { class: 'field__label bbox__label' }, 'Serves the beat'),
+        h('select', { class: 'input', onchange: (e) => { upd((cc) => { cc.beatId = e.target.value || null; }); draw(); } },
+          h('option', { value: '' }, '— None —'),
+          beats.map((x, j) => h('option', { value: x.id, selected: x.id === c.beatId }, `${j + 1} · ${x.name || 'Untitled beat'}`)))),
+      b ? [
+        b.text ? h('p', { class: 'bbox__text' }, b.text) : null,
+        b.hint ? h('p', { class: 'bbox__hint' }, b.hint) : null,
+        h('div', { class: 'bbox__meta' },
+          h('span', {}, 'Planned for ', h('strong', {}, colLabel(p, plannedCol(p, b))),
+            plannedCol(p, b) === ci ? ' · this scene is there ✓' : ` · this scene is in ${colLabel(p, ci)}`),
+          h('span', { class: 'spacer' }),
+          h('a', { href: phref('flow'), onclick: () => dlg().close() }, 'Open in Story flow')),
+        h('div', { class: 'bbox__nav' },
+          h('span', {}, beats[i - 1] ? ['← Before: ', h('strong', {}, beats[i - 1].name || 'Untitled')] : 'First beat'),
+          h('span', {}, beats[i + 1] ? ['Next: ', h('strong', {}, beats[i + 1].name || 'Untitled'), ' →'] : 'Last beat')),
+      ] : h('p', { class: 'muted small' }, 'Pick the beat this scene moves forward, to keep it in step with your Story flow.'),
+    ]);
+  };
+  draw();
+  return box;
 }
 
 boot();
