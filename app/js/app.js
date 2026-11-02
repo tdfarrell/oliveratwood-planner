@@ -3335,16 +3335,37 @@ function cleanNotes(src) {
       if (['SCRIPT', 'STYLE', 'TEMPLATE', 'IFRAME', 'OBJECT', 'SVG', 'IMG', 'META', 'LINK', 'TITLE'].includes(n.tagName)) continue;
       const tag = NOTE_TAGS[n.tagName];
       if (!tag) { walk(n, to); continue; }
-      // A block inside a paragraph (pasted content) is flattened into the parent.
-      if (NOTE_BLOCKS.has(tag) && ['p', 'h2', 'h3', 'li'].includes(to.tagName?.toLowerCase()) && tag !== 'ul' && tag !== 'ol') { walk(n, to); continue; }
+      // A block inside a line (Safari and some pastes put a new line's <div> inside the <p> or <li>
+      // before it) becomes a line break, so the break survives.
+      if (NOTE_BLOCKS.has(tag) && ['p', 'h2', 'h3', 'li', 'blockquote'].includes(to.tagName?.toLowerCase()) && tag !== 'ul' && tag !== 'ol') {
+        const br = () => document.createElement('br');
+        if (to.lastChild && to.lastChild.nodeName !== 'BR' && to.textContent.trim()) to.append(br());
+        const before = to.childNodes.length;
+        walk(n, to);
+        if (to.childNodes.length === before) to.append(br());
+        else if (n.nextSibling && (n.nextSibling.nodeType === 1 ? n.nextSibling.nodeName !== 'BR' : n.nextSibling.nodeValue.trim())) to.append(br());
+        continue;
+      }
       const el = document.createElement(tag);
       to.append(el);
       if (tag !== 'br') walk(n, el);
     }
   };
   walk(src, out);
-  // Drop empty inline wrappers left over from editing.
+  // Loose text or bold/italic sitting at the top level (Safari types the first line that way)
+  // goes into its own paragraph, split at line breaks.
+  let run = null;
+  for (const n of [...out.childNodes]) {
+    const inline = n.nodeType === 3 || !NOTE_BLOCKS.has(n.nodeName.toLowerCase());
+    if (!inline) { run = null; continue; }
+    if (n.nodeName === 'BR') { if (run) run = null; else out.insertBefore(Object.assign(document.createElement('p'), {}), n).append(document.createElement('br')); n.remove(); continue; }
+    if (n.nodeType === 3 && !n.nodeValue.trim() && !run) { n.remove(); continue; }
+    if (!run) { run = document.createElement('p'); out.insertBefore(run, n); }
+    run.append(n);
+  }
+  // Drop empty wrappers left over from editing (an empty line keeps its <br>, so it stays).
   out.querySelectorAll('b, i, u, s').forEach((x) => { if (!x.textContent) x.remove(); });
+  out.querySelectorAll('p, h2, h3, blockquote').forEach((x) => { if (!x.childNodes.length) x.remove(); });
   return out;
 }
 // Stored notes are parsed in an inert document, then rebuilt from the allowlist.
@@ -3484,6 +3505,8 @@ function notesView(p, f, isSeriesArc) {
 
   // Markdown-style shortcuts at the start of a line.
   ed.addEventListener('keydown', (e) => {
+    // A new line is a change of structure: save it right away rather than after the pause.
+    if (e.key === 'Enter') setTimeout(persist, 0);
     if (e.key === 'Tab') {
       const cur = currentBlock();
       if (cur && cur.closest('li')) { e.preventDefault(); cmd(e.shiftKey ? 'outdent' : 'indent'); }
