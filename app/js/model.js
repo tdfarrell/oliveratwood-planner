@@ -216,6 +216,8 @@ export function normalize(p) {
   p.nameBank = Array.isArray(p.nameBank) ? p.nameBank : [];
   p.game = normalizeGame(p.game);
   p.flow = normalizeFlow(p.flow);
+  normalizeBook(p);
+  if (!Object.getOwnPropertyDescriptor(p, 'entities')?.get) normalizeWorld(p);
   for (const c of p.cards) {
     c.entityIds = c.entityIds || [];
     c.fields = c.fields || {};
@@ -224,8 +226,10 @@ export function normalize(p) {
     c.when = c.when && Number.isInteger(c.when.y) ? c.when : null;
     c.game = Array.isArray(c.game) ? c.game : [];
     c.beatId = c.beatId || null;
+    for (const k of ['reveals', 'rels', 'raises', 'answers', 'flags', 'arcs', 'clips', 'quests']) c[k] = Array.isArray(c[k]) ? c[k] : [];
+    c.chk = c.chk && typeof c.chk === 'object' ? c.chk : {};
   }
-  for (const e of p.entities) { e.fields = e.fields || {}; e.summary = e.summary || ''; e.notes = e.notes || ''; }
+  for (const e of p.entities) normalizeEntity(e);
   for (const t of p.types) t.fields = t.fields || [];
   return p;
 }
@@ -279,8 +283,9 @@ export const LINK_KINDS = [
   ['retold', 'Retold or remembered'],
 ];
 
-const WORLD_KEYS = ['types', 'entities', 'nameBank', 'game'];
-const BOOK_KEYS = ['title', 'synopsis', 'storySlug', 'labels', 'columns', 'rows', 'cards', 'cardFields', 'acts', 'notes', 'created', 'flow', 'wordGoal'];
+export const WORLD_KEYS = ['types', 'entities', 'nameBank', 'game', 'secrets', 'rels', 'maps', 'questions', 'travel', 'webPos', 'dismissed', 'calendar'];
+const BOOK_KEYS = ['title', 'synopsis', 'storySlug', 'labels', 'columns', 'rows', 'cards', 'cardFields', 'acts', 'notes', 'created', 'flow', 'wordGoal',
+  'branches', 'passes', 'checklist', 'braid', 'mood', 'clips'];
 
 export function newSeries(title) {
   return {
@@ -402,8 +407,11 @@ export function prepare(data) {
   for (const k of ['books', 'types', 'entities', 'nameBank']) s[k] = Array.isArray(s[k]) ? s[k] : [];
   s.game = normalizeGame(s.game);
   s.flow = normalizeFlow(s.flow, true);
+  normalizeWorld(s);
+  s.mood = Array.isArray(s.mood) ? s.mood : [];
+  s.clips = Array.isArray(s.clips) ? s.clips : [];
   for (const t of s.types) t.fields = t.fields || [];
-  for (const e of s.entities) { e.fields = e.fields || {}; e.summary = e.summary || ''; e.notes = e.notes || ''; }
+  for (const e of s.entities) normalizeEntity(e);
   for (const b of s.books) {
     if (!s.groups.some((g) => g.id === b.groupId)) b.groupId = s.groups[0].id;
     attachBook(s, b);
@@ -450,6 +458,10 @@ export const GAME_EVENTS = [
 export function normalizeGame(g) {
   g = g && typeof g === 'object' ? g : {};
   g.on = !!g.on;
+  for (const k of ['items', 'loot', 'quests']) g[k] = Array.isArray(g[k]) ? g[k] : [];
+  const msgs = Array.isArray(g.msgs) ? g.msgs : [];
+  g.msgs = DEFAULT_MSGS.map(([key, label, tpl]) => msgs.find((m) => m.key === key) || { key, label, tpl }).concat(msgs.filter((m) => !DEFAULT_MSGS.some(([k]) => k === m.key)));
+  g.msgStyle = Object.assign({ brackets: '[]', caps: 'first' }, g.msgStyle);
   g.look = g.look === 'planner' ? 'planner' : 'game';
   const t = g.tpl && typeof g.tpl === 'object' ? g.tpl : {};
   g.tpl = {};
@@ -586,4 +598,93 @@ export function normalizeFlow(f, isSeries = false) {
   }
   f.beats.sort((a, b) => a.pct - b.pct);
   return f;
+}
+
+
+// ======================================================================
+// World, book, scene and entry extras (round 3)
+// ======================================================================
+
+export const DEFAULT_MSGS = [
+  ['level', 'Level up', '[Level up! {name} is now Level {level}.]'],
+  ['skill', 'Skill acquired', '[Skill acquired: {skill}]'],
+  ['skillrank', 'Skill rank up', '[{skill} has reached Rank {rank}.]'],
+  ['item', 'Item obtained', '[Item obtained: {item}]'],
+  ['itemlost', 'Item lost', '[Item lost: {item}]'],
+  ['stat', 'Stat change', '[{stat} {amount}]'],
+  ['res', 'HP / MP', '[{stat}: {amount}]'],
+  ['title', 'Title earned', '[Title earned: {title}]'],
+  ['id', 'Class / identity', '[{stat}: {value}]'],
+  ['equip', 'Equipped', '[Equipped: {item} ({slot})]'],
+  ['quest', 'Quest updated', '[Quest updated: {quest} · {state}]'],
+];
+
+export const SECRET_KINDS = [['secret', 'Secret'], ['twist', 'Twist'], ['clue', 'Clue'], ['lie', 'Lie']];
+export const REVEAL_HOW = [['learns', 'learns it'], ['suspects', 'starts to suspect'], ['lie', 'is told a lie about it'], ['acts', 'acts on it']];
+export const REL_KINDS = [['family', 'Family', '#1C2326', ''], ['ally', 'Ally', '#2F7A4A', ''], ['friend', 'Friend', '#3E8F6A', ''], ['mentor', 'Mentor', '#2F6F7E', '4 4'], ['love', 'Love', '#C9531A', ''],
+  ['rival', 'Rival', '#A8344E', '7 5'], ['enemy', 'Enemy', '#7A1F33', '2 4'], ['owes', 'Owes a debt', '#7A5C9E', '7 5'], ['other', 'Other', '#5A6870', '1 4']];
+export const FLAG_KINDS = [['continuity', 'Continuity', '#A8344E'], ['foreshadow', 'Foreshadow', '#7A5C9E'], ['character', 'Character', '#C9531A'], ['fact', 'Fact check', '#2F6F7E'], ['prose', 'Prose', '#5A6870'], ['cut', 'Cut', '#9A5B12']];
+export const QUEST_KINDS = [['main', 'Main', '#C9531A'], ['side', 'Side', '#2F6F7E'], ['hidden', 'Hidden', '#7A5C9E']];
+export const QUEST_ACTS = [['offer', 'Offered'], ['accept', 'Accepted'], ['step', 'Objective done'], ['complete', 'Completed'], ['fail', 'Failed']];
+export const RARITIES = [['Common', '#5A6870'], ['Uncommon', '#2F7A4A'], ['Rare', '#2E6CB0'], ['Epic', '#7A4FB0'], ['Legendary', '#A8610E'], ['Quest', '#8A3410']];
+export const ITEM_TYPES = ['Weapon', 'Armor', 'Accessory', 'Consumable', 'Material', 'Tool', 'Quest item'];
+export const MAP_KINDS = [['world', 'World'], ['city', 'Cities & towns'], ['stage', 'Stages & dungeons'], ['room', 'Rooms & buildings']];
+export const FAMILY_KINDS = [['parent', 'Parent of'], ['spouse', 'Married to'], ['raised', 'Raised'], ['sibling', 'Sibling of']];
+export const DEFAULT_PASSES = [['Story pass', 'Does each scene earn its place?'], ['Continuity', 'Names, dates, who knows what'], ['Dialogue', 'Voices sound like themselves'], ['Line edit', 'Sentence by sentence'], ['Proof', 'Typos before posting']];
+
+const arr = (v) => (Array.isArray(v) ? v : []);
+
+// The world: shared by every book of a series, or a standalone project's own.
+export function normalizeWorld(w) {
+  for (const k of ['secrets', 'rels', 'maps', 'questions', 'dismissed']) w[k] = arr(w[k]);
+  w.webPos = w.webPos && typeof w.webPos === 'object' ? w.webPos : {};
+  const t = w.travel && typeof w.travel === 'object' ? w.travel : {};
+  w.travel = { unit: t.unit || 'mi', speeds: Object.assign({ foot: 20, horse: 40, boat: 60 }, t.speeds), routes: arr(t.routes) };
+  const c = w.calendar && typeof w.calendar === 'object' ? w.calendar : {};
+  c.years = arr(c.years).length ? c.years : ['Year 1', 'Year 2', 'Year 3'];
+  c.parts = arr(c.parts).length ? c.parts : ['Spring', 'Summer', 'Autumn', 'Winter'];
+  c.days = Math.max(1, Math.min(400, parseInt(c.days, 10) || 30));
+  c.holidays = arr(c.holidays); c.moons = arr(c.moons); c.seasons = arr(c.seasons);
+  w.calendar = c;
+  for (const m of w.maps) { m.pins = arr(m.pins); m.kind = m.kind || 'world'; }
+  for (const x of w.secrets) { x.known = arr(x.known); x.kind = x.kind || 'secret'; }
+  return w;
+}
+
+export function normalizeBook(b) {
+  b.branches = arr(b.branches);
+  b.passes = Array.isArray(b.passes) ? b.passes : DEFAULT_PASSES.map(([name, what]) => ({ id: uid(), name, what, required: name === 'Proof' }));
+  b.checklist = Object.assign({ on: false, labels: { goal: 'Goal', conflict: 'Conflict', outcome: 'Outcome', change: 'What changes' } }, b.checklist);
+  b.braid = Object.assign({ run: 3, gap: 6 }, b.braid);
+  b.mood = arr(b.mood); b.clips = arr(b.clips);
+  for (const c of b.columns || []) c.passes = c.passes && typeof c.passes === 'object' ? c.passes : {};
+  return b;
+}
+
+export function normalizeEntity(e) {
+  e.fields = e.fields || {}; e.summary = e.summary || ''; e.notes = e.notes || '';
+  for (const k of ['aliases', 'wrong', 'family', 'mood', 'clips']) e[k] = arr(e[k]);
+  e.voice = Object.assign({ talk: '', dialect: '', loves: [], never: [], lines: [] }, e.voice);
+  e.arc = Object.assign({ type: '', want: '', need: '', wound: '', lie: '', truth: '' }, e.arc);
+  e.born = e.born && Number.isInteger(e.born.y) ? e.born : null;
+  e.say = e.say || ''; e.role = e.role || ''; e.reportsTo = e.reportsTo || null;
+  return e;
+}
+
+// Absolute day number of a "when" on the story calendar (or null).
+export function dayOf(cal, w) {
+  if (!w || !Number.isInteger(w.y)) return null;
+  const d = parseInt(w.day, 10);
+  return (w.y * cal.parts.length + (w.p || 0)) * cal.days + (Number.isFinite(d) ? Math.max(1, Math.min(cal.days, d)) : Math.ceil(cal.days / 2)) - 1;
+}
+export const hasExactDay = (w) => !!w && Number.isFinite(parseInt(w.day, 10));
+
+// Fill in a system-message template.
+export function fillMsg(tpl, vals, style = {}) {
+  let t = String(tpl || '').replace(/\{(\w+)\}/g, (m, k) => (vals[k] != null && vals[k] !== '' ? String(vals[k]) : ''));
+  t = t.replace(/\s+([)\].,])/g, '$1').replace(/\(\s*\)/g, '').replace(/\s{2,}/g, ' ');
+  const inner = t.replace(/^\[(.*)\]$/, '$1');
+  const cased = style.caps === 'upper' ? inner.toUpperCase() : style.caps === 'title' ? inner.replace(/\b\w/g, (c) => c.toUpperCase()) : inner;
+  const br = { '[]': ['[', ']'], '<>': ['<', '>'], '【】': ['【', '】'], none: ['', ''] }[style.brackets || '[]'] || ['[', ']'];
+  return br[0] + cased + br[1];
 }

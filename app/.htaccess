@@ -6,7 +6,7 @@ DirectoryIndex index.html
 # Keep the planner out of search engines, and always fetch the newest app files
 <IfModule mod_headers.c>
   Header set X-Robots-Tag "noindex, nofollow"
-  Header set Cache-Control "no-cache"
+  Header setifempty Cache-Control "no-cache"
   Header set X-Content-Type-Options "nosniff"
   Header set Referrer-Policy "same-origin"
 </IfModule>

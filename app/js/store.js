@@ -48,6 +48,20 @@ export class ServerStore {
   async backups(slug) { return (await this.req('backups', { params: { slug } })).backups; }
   async backup(slug, id) { return (await this.req('backup', { params: { slug, id } })).data; }
   async deleted() { return (await this.req('deleted')).projects; }
+  // Images: the server keeps them; the planner stores only their names.
+  async upload(file) {
+    let res;
+    try {
+      res = await fetch(`${this.base}?action=upload`, { method: 'POST', credentials: 'same-origin', headers: { 'X-Planner': '1', 'Content-Type': file.type || 'application/octet-stream' }, body: file });
+    } catch { throw new StoreError('Can’t reach the server. Check your connection.', 0, 'offline'); }
+    let data = null;
+    try { data = await res.json(); } catch { /* not JSON */ }
+    if (!res.ok || !data) throw new StoreError((data && data.error) || `Upload failed (${res.status})`, res.status, (data && data.kind) || 'error');
+    return data.name;
+  }
+  fileUrl(name) { return /^[a-f0-9]{20}\.(png|jpg|gif|webp)$/.test(name || '') ? `${this.base}?action=file&n=${name}` : ''; }
+  async ideas() { return this.req('ideas'); }
+  async saveIdeas(ideas, rev) { return (await this.req('ideas', { method: 'POST', body: { ideas, rev: rev || null } })).rev; }
 }
 
 export class LocalStore {
@@ -83,6 +97,12 @@ export class LocalStore {
     return next;
   }
   async remove(slug) { const all = this.all(); delete all[slug]; this.put(all); }
+  async upload(file) {
+    return new Promise((resolve, reject) => { const r = new FileReader(); r.onload = () => resolve(r.result); r.onerror = () => reject(new StoreError('Couldn’t read that file.', 0, 'error')); r.readAsDataURL(file); });
+  }
+  fileUrl(name) { return /^data:image\/(png|jpeg|gif|webp);base64,/.test(name || '') ? name : ''; }
+  async ideas() { try { return JSON.parse(localStorage.getItem(this.key + 'ideas')) || { ideas: [], rev: null }; } catch { return { ideas: [], rev: null }; } }
+  async saveIdeas(ideas) { const rev = Math.random().toString(36).slice(2); localStorage.setItem(this.key + 'ideas', JSON.stringify({ ideas, rev })); return rev; }
 }
 
 // ---------- Unsaved-changes safety net (per device) ----------

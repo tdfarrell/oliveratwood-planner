@@ -1,7 +1,13 @@
 import { h, append, clear, icon, openDialog, choose, confirmDanger, ask, toast, autosize } from './dom.js';
 import { TEMPLATES, PALETTE, FIELD_TYPES, STATUSES, STATUS_SHORT, uid, slugify, numeral, roman, normalize, valueText, actsOn, syncActs,
   prepare, newSeries, newBook, importProject, findDuplicates, mergeEntities, LINE_COLORS, LINK_KINDS,
-  GAME_EVENTS, blankSheet, applyEvent, describeEvent, cloneSheet, STRUCTURES, makeBeats } from './model.js';
+  GAME_EVENTS, blankSheet, applyEvent, describeEvent, cloneSheet, STRUCTURES, makeBeats, WORLD_KEYS } from './model.js';
+import { viewPromises, viewWhatifs, viewBraid, viewRevisions, sceneExtras, cardExtras, publishCheck, branchBanner } from './x-story.js';
+import { viewChars, viewWeb, viewArcs, viewFamily, viewNames, viewSecrets, entityTabs, entityExtra, ageLine, isChar, profileExtras, asideExtras, agesText } from './x-people.js';
+import { viewMaps, viewCalendar, viewTravel, viewFactions, viewMood, calendarRow, whenInfo, clipsPanel } from './x-world.js';
+import { viewItems, viewLoot, viewQuests, viewSysMsg } from './x-game.js';
+import { viewChecks, viewPresence, checksCount } from './x-checks.js';
+import { ideasButton, viewIdeasPage, openIdeas, loadIdeas } from './x-ideas.js';
 import { ServerStore, LocalStore, unsaved } from './store.js';
 import { KINDS, FLAVORS, kindForType, generate } from './names.js';
 
@@ -29,9 +35,28 @@ const isSeries = () => !!(S.project && S.project.kind === 'series');
 // series itself (series-wide screens see every book's cards through read-only views).
 const P = () => {
   const d = S.project;
-  if (d && d.kind === 'series' && S.bookId) return d.books.find((b) => b.id === S.bookId) || d;
-  return d;
+  let p = d;
+  if (d && d.kind === 'series' && S.bookId) p = d.books.find((b) => b.id === S.bookId) || d;
+  if (S.branchId && p && Array.isArray(p.branches)) {
+    const br = p.branches.find((x) => x.id === S.branchId);
+    if (br) return branchView(p, br);
+  }
+  return p;
 };
+// A what-if branch is a copy of a book's grid. Everything else (title, world,
+// flow…) is read from the book it came from, so the grid screens work on it as is.
+const BRANCH_OWN = ['columns', 'rows', 'cards', 'acts', 'labels', 'cardFields'];
+function branchView(book, br) {
+  const v = br.data;
+  if (v.__book !== book) {
+    for (const k of [...WORLD_KEYS, 'title', 'synopsis', 'storySlug', 'flow', 'notes', 'wordGoal', 'branches', 'passes', 'checklist', 'braid', 'mood', 'clips', 'id', 'groupId']) {
+      if (BRANCH_OWN.includes(k)) continue;
+      Object.defineProperty(v, k, { get: () => book[k], set: (x) => { book[k] = x; }, enumerable: false, configurable: true });
+    }
+    Object.defineProperty(v, '__book', { value: book, enumerable: false, configurable: true });
+  }
+  return v;
+}
 const inSeriesTop = () => isSeries() && !S.bookId;
 // Every card the current screen can link to: the whole series, or one project.
 const scopeCards = () => (isSeries() ? S.project.books.flatMap((b) => b.cards) : (S.project ? S.project.cards : []));
@@ -80,6 +105,7 @@ function appearances(p, id) {
 // Opens a card's editor from anywhere, switching to its book for the dialog.
 let cardCtx = 0;
 function openCard(id) {
+  if (S.branchId) { editCard(id); return; }
   if (isSeries()) {
     const b = S.project.books.find((x) => x.cards.some((k) => k.id === id));
     if (!b) return;
@@ -207,6 +233,7 @@ function parseRoute() {
     if (parts[2] === 'b' && parts[3]) return { view: 'project', kind: 's', slug: parts[1], book: parts[3], tab: parts[4] || 'grid', id: parts[5] || null };
     return { view: 'project', kind: 's', slug: parts[1], book: null, tab: parts[2] || 'timeline', id: parts[3] || null };
   }
+  if (parts[0] === 'ideas') return { view: 'ideas' };
   return { view: 'home' };
 }
 const go = (path) => { location.hash = '#/' + path; };
@@ -227,6 +254,7 @@ async function route() {
   if (S.flushNotes) { const fl = S.flushNotes; S.flushNotes = null; fl(); }
   document.querySelectorAll('dialog[open]').forEach((d) => d.close());
   S.route = parseRoute();
+  if (S.route.view === 'ideas') return viewIdeasPage();
   if (S.route.view === 'home') {
     await saveNow();
     S.slug = null; S.project = null;
@@ -241,6 +269,7 @@ async function route() {
   if (isSeries() && S.route.kind === 'p') return go(`s/${S.slug}`);
   if (!isSeries() && S.route.kind === 's') return go(`p/${S.slug}`);
   S.bookId = S.route.book || null;
+  S.branchId = S.route.tab === 'whatif' && S.route.id ? S.route.id : null;
   if (S.bookId && !S.project.books.some((b) => b.id === S.bookId)) { toast('That book isn’t in this series any more.'); return go(`s/${S.slug}/books`); }
   const prevKey = S.renderKey;
   render();
@@ -299,6 +328,7 @@ async function boot() {
     }
     S.user = st.user || '';
     if (!st.authed) return renderLogin();
+    loadIdeas();
     route();
   } catch (e) {
     renderMessage('Can’t reach the planner', e.message);
@@ -338,6 +368,7 @@ function renderLogin(expired = false) {
         const r = await store.login(user.value.trim(), input.value);
         S.user = (r && r.user) || user.value.trim();
         try { localStorage.setItem('planner:user', user.value.trim()); } catch { /* blocked */ }
+        loadIdeas();
         if (S.project) { render(); save(); } else route();
       } catch (ex) {
         err.textContent = ex.message; btn.disabled = false; input.select();
@@ -393,7 +424,7 @@ async function renderHome() {
 
   const restore = h('div', { class: 'home__foot' });
   const page = h('div', { class: 'page' },
-    h('header', { class: 'top top--home' }, brand(), h('span', { class: 'spacer' }),
+    h('header', { class: 'top top--home' }, brand(), h('span', { class: 'spacer' }), ideasButton(),
       DEMO ? h('span', { class: 'pill' }, 'Demo: saves in this browser only') : null,
       S.user && !DEMO ? h('span', { class: 'muted small' }, S.user) : null,
       DEMO ? null : h('button', { class: 'btn btn--ghost btn--sm', type: 'button', onclick: async () => { await store.logout(); S.project = null; S.slug = null; renderLogin(); } }, icon('out'), ' Sign out')),
@@ -460,72 +491,80 @@ function restoreDeletedDialog(list) {
 // Project shell
 // ======================================================================
 
+// The tabs, grouped. Each group is [id, label, icon, [[tab, label], …]].
+function navGroups(top, series) {
+  const story = top ? [['notes', 'Notes'], ['flow', 'Series arc'], ['promises', 'Promises']]
+    : [['notes', 'Notes'], ['flow', 'Beats & shape'], ['promises', 'Promises'], ['whatif', 'What-ifs']];
+  return [
+    top ? ['timeline', 'Timeline', 'timeline', [['timeline', 'Timeline']]] : null,
+    ['story', 'Story', 'flow', story],
+    top ? ['books', 'Books', 'book', [['books', 'Books']]] : ['grid', 'Grid', 'grid', [['grid', 'Grid'], ['braid', 'Braid']]],
+    ['chars', 'Characters', 'user', [['chars', 'All'], ['web', 'Relationships'], ['arcs', 'Arcs'], ['family', 'Family trees']]],
+    ['world', 'World', 'globe', [['world', 'Entries'], ['factions', 'Factions'], ['maps', 'Maps'], ['calendar', 'Calendar'], ['travel', 'Travel'], ['names', 'Names']]],
+    gameOn() ? ['game', 'Game', 'spark', [['progress', 'Sheets & progression'], ['items', 'Items'], ['loot', 'Loot'], ['quests', 'Quests'], ['sysmsg', 'System messages']]] : null,
+    ['checks', 'Checks', 'alert', [['checks', 'Overview'], ['continuity', 'Continuity'], ['secrets', 'Secrets'], ['presence', 'Presence'], ['revisions', 'Revisions']]],
+    ['book', top ? 'Series' : series ? 'Book' : 'Project', 'gear', [[top ? 'settings' : 'project', 'Settings'], ['mood', 'Mood board']]],
+  ].filter(Boolean);
+}
+
 function render() {
   if (S.flushNotes) { const fl = S.flushNotes; S.flushNotes = null; fl(); }
   const p = P();
   if (!p) return renderHome();
-  const tab = S.route.tab;
   const series = isSeries() ? S.project : null;
-  let tabs, activeTab, main, crumbs;
-
-  if (series && !S.bookId) {
-    // Series-wide screens
-    document.title = `${series.title} · Planner`;
-    tabs = [
-      ['timeline', 'Timeline', 'timeline', shref()],
-      ['flow', 'Story flow', 'flow', shref('flow')],
-      gameOn() ? ['progress', 'Progression', 'spark', shref('progress')] : null,
-      ['books', 'Books', 'book', shref('books')],
-      ['world', 'Shared world', 'globe', shref('world')],
-      ['continuity', 'Continuity', 'link', shref('continuity')],
-      ['settings', 'Series', 'gear', shref('settings')],
-    ];
-    activeTab = tab === 'e' ? 'world' : tab;
-    if (tab === 'books') main = viewBooks(series);
-    else if (tab === 'world') main = viewWorld(p, S.route.id);
-    else if (tab === 'e') main = viewEntity(p, S.route.id);
-    else if (tab === 'continuity') main = viewContinuity(p);
-    else if (tab === 'settings') main = viewSeriesSettings(series);
-    else if (tab === 'progress' && gameOn()) main = viewProgression(p);
-    else if (tab === 'flow') main = viewSeriesArc(series);
-    else { activeTab = 'timeline'; main = viewTimeline(series); }
-    crumbs = [h('a', { class: 'top__project', href: shref() }, series.title), h('span', { class: 'pill pill--series' }, 'Series')];
-  } else {
-    document.title = `${p.title} · Planner`;
-    tabs = [
-      ['flow', 'Story flow', 'flow', phref('flow')],
-      ['grid', 'Grid', 'grid', phref()],
-      gameOn() ? ['progress', 'Progression', 'spark', phref('progress')] : null,
-      ['world', series ? 'Shared world' : 'World', 'globe', phref('world')],
-      ['continuity', 'Continuity', 'link', phref('continuity')],
-      ['project', series ? 'Book' : 'Project', 'gear', phref('project')],
-    ];
-    if (series) tabs.unshift(['series', 'Timeline', 'timeline', shref()]);
-    activeTab = tab === 'e' ? 'world' : tab;
-    if (tab === 'world') main = viewWorld(p, S.route.id);
-    else if (tab === 'e') main = viewEntity(p, S.route.id);
-    else if (tab === 'continuity') main = viewContinuity(p);
-    else if (tab === 'project') main = viewProject(p);
-    else if (tab === 'progress' && gameOn()) main = viewProgression(p);
-    else if (tab === 'flow') main = viewFlow(p);
-    else { activeTab = 'grid'; main = viewGrid(p); }
-    crumbs = series
+  const top = !!(series && !S.bookId);
+  const groups = navGroups(top, series);
+  let tab = S.route.tab || (top ? 'timeline' : 'grid');
+  if (tab === 'progress' && !gameOn()) tab = top ? 'timeline' : 'grid';
+  let groupId;
+  if (tab === 'e') { const e = entity(S.route.id); groupId = e && isChar(e) ? 'chars' : 'world'; }
+  else groupId = (groups.find((g) => g[3].some(([t]) => t === tab)) || [])[0];
+  if (!groupId) { tab = top ? 'timeline' : 'grid'; groupId = top ? 'timeline' : 'grid'; }
+  const group = groups.find((g) => g[0] === groupId);
+  const url = (t) => (top ? shref(t === 'timeline' ? '' : t) : phref(t === 'grid' ? '' : t));
+  const id = S.route.id;
+  const VIEWS = {
+    timeline: () => viewTimeline(series), books: () => viewBooks(series), settings: () => viewSeriesSettings(series),
+    notes: () => (top ? viewSeriesArc(series) : viewFlow(p)), flow: () => (top ? viewSeriesArc(series) : viewFlow(p)),
+    promises: () => viewPromises(p), whatif: () => (id ? [branchBanner(p), viewGrid(p)] : viewWhatifs(p)),
+    grid: () => viewGrid(p), braid: () => viewBraid(p),
+    chars: () => viewChars(p), web: () => viewWeb(p), arcs: () => viewArcs(p), family: () => viewFamily(p),
+    e: () => viewEntity(p, id), world: () => viewWorld(p, id), factions: () => viewFactions(p), maps: () => viewMaps(p, id),
+    calendar: () => viewCalendar(p), travel: () => viewTravel(p), names: () => viewNames(p),
+    progress: () => viewProgression(p), items: () => viewItems(p), loot: () => viewLoot(p), quests: () => viewQuests(p), sysmsg: () => viewSysMsg(p),
+    checks: () => viewChecks(p), continuity: () => viewContinuity(p), secrets: () => viewSecrets(p), presence: () => viewPresence(p), revisions: () => viewRevisions(p),
+    project: () => viewProject(p), mood: () => viewMood(p),
+  };
+  const main = (VIEWS[tab] || VIEWS[top ? 'timeline' : 'grid'])();
+  const activeTab = tab;
+  document.title = `${p.title} · Planner`;
+  const crumbs = top
+    ? [h('a', { class: 'top__project', href: shref() }, series.title), h('span', { class: 'pill pill--series' }, 'Series')]
+    : series
       ? [h('a', { class: 'top__project', href: shref() }, series.title), h('span', { class: 'crumb-sep', 'aria-hidden': 'true' }, '›'), h('a', { class: 'top__book', href: phref() }, p.title)]
       : [h('a', { class: 'top__project', href: phref() }, p.title)];
-  }
+  let nChecks = 0;
+  try { nChecks = checksCount(p); } catch (err) { console.error(err); }
+  const tabs = [
+    series && !top ? ['series', 'Timeline', 'timeline', shref()] : null,
+    ...groups.map((g) => [g[0], g[1], g[2], url(g[3][0][0])]),
+  ].filter(Boolean);
+  const subs = group && group[3].length > 1 ? h('nav', { class: 'subtabs', 'aria-label': group[1] }, group[3].map(([t, label]) =>
+    h('a', { class: 'subtab' + (t === tab || (tab === 'e' && t === (groupId === 'chars' ? 'chars' : 'world')) ? ' is-on' : ''), href: url(t), 'aria-current': t === tab ? 'page' : null }, label))) : null;
 
-  const wide = activeTab === 'grid' || activeTab === 'timeline' || activeTab === 'progress';
+  const wide = ['grid', 'timeline', 'progress', 'braid'].includes(activeTab) || (activeTab === 'whatif' && !!id);
   if (activeTab !== 'grid') S.flowSel = null;
   const shell = h('div', { class: 'page' + (wide ? ' page--grid' : '') },
     h('header', { class: 'top' },
       brand(),
       h('span', { class: 'top__crumbs' }, crumbs),
-      h('nav', { class: 'tabs', 'aria-label': 'Views' }, tabs.filter(Boolean).map(([id, label, ic, url]) =>
-        h('a', { class: 'tab' + (activeTab === id ? ' is-on' : ''), href: url, 'aria-current': activeTab === id ? 'page' : null },
-          icon(ic), h('span', {}, label)))),
-      h('div', { class: 'top__right' }, wordPill(), searchBox(p),
+      h('nav', { class: 'tabs', 'aria-label': 'Views' }, tabs.map(([gid, label, ic, u]) =>
+        h('a', { class: 'tab' + (groupId === gid ? ' is-on' : ''), href: u, 'aria-current': groupId === gid ? 'page' : null },
+          icon(ic), h('span', {}, label), gid === 'checks' && nChecks ? h('span', { class: 'tab__badge', 'aria-label': `${nChecks} to look at` }, String(nChecks)) : null))),
+      h('div', { class: 'top__right' }, wordPill(), ideasButton(), searchBox(p),
         h('button', { class: 'iconbtn', type: 'button', title: 'Name generator', 'aria-label': 'Name generator', onclick: () => nameDialog({ kind: S.route.tab === 'world' || S.route.tab === 'e' ? kindForType((p.types.find((t) => t.id === S.route.id) || typeOf(entity(S.route.id)) || {}).name) : undefined, createType: S.route.tab === 'world' ? S.route.id : null }) }, icon('dice')),
         h('span', { id: 'save-status', class: 'status', 'aria-live': 'polite' }))),
+    subs,
     h('main', { class: 'main main--' + activeTab }, main));
   const key = `${S.slug}|${S.bookId || ''}|${S.route.tab || ''}|${S.route.id || ''}`;
   saveScroll();
@@ -636,8 +675,9 @@ function searchBox(p) {
     results = [];
     for (const e of p.entities) {
       const t = typeOf(e);
-      const text = [e.name, e.summary, e.notes, ...(t ? t.fields.map((f) => valueText(p, f, e.fields[f.id])) : [])].join(' ').toLowerCase();
-      if (text.includes(q)) results.push({ label: e.name || 'Unnamed', sub: t ? t.singular : 'Entry', color: t?.color, go: () => go(pbase('e/' + e.id)), rank: (e.name || '').toLowerCase().includes(q) ? 0 : 2 });
+      const text = [e.name, ...(e.aliases || []), e.summary, e.notes, ...(t ? t.fields.map((f) => valueText(p, f, e.fields[f.id])) : [])].join(' ').toLowerCase();
+      const alias = (e.aliases || []).find((a) => a.toLowerCase().includes(q));
+      if (text.includes(q)) results.push({ label: e.name || 'Unnamed', sub: (t ? t.singular : 'Entry') + (alias && !(e.name || '').toLowerCase().includes(q) ? ` · “${alias}”` : ''), color: t?.color, go: () => go(pbase('e/' + e.id)), rank: (e.name || '').toLowerCase().includes(q) || alias ? 0 : 2 });
     }
     for (const k of p.cards) {
       const text = [k.title, k.summary, k.notes, ...p.cardFields.map((f) => valueText(p, f, k.fields[f.id]))].join(' ').toLowerCase();
@@ -669,6 +709,9 @@ function searchBox(p) {
 }
 
 document.addEventListener('keydown', (e) => {
+  if (e.key === 'i' && !e.metaKey && !e.ctrlKey && !e.altKey && !/INPUT|TEXTAREA|SELECT/.test(document.activeElement?.tagName) && !document.activeElement?.isContentEditable && !document.querySelector('dialog[open]') && S.user !== undefined) {
+    e.preventDefault(); openIdeas(); return;
+  }
   if ((e.key === 'k' && (e.metaKey || e.ctrlKey)) || (e.key === '/' && !/INPUT|TEXTAREA|SELECT/.test(document.activeElement?.tagName))) {
     const s = document.querySelector('.search__input');
     if (s && !document.querySelector('dialog[open]')) { e.preventDefault(); s.focus(); }
@@ -967,6 +1010,7 @@ function cardEl(p, k, r) {
   !S.compact && ents.length ? h('div', { class: 'card__chips' },
     ents.slice(0, 6).map((e) => h('span', { class: 'chip chip--sm', style: { '--c': typeOf(e)?.color } }, e.name || 'Unnamed')),
     ents.length > 6 ? h('span', { class: 'chip chip--sm chip--more' }, `+${ents.length - 6}`) : null) : null,
+  cardExtras(p, k),
   k.words || k.wordGoal ? h('div', { class: 'card__words' }, h('span', { class: wordClass(k.words || 0, k.wordGoal) }, k.words || k.wordGoal ? (k.wordGoal ? wordText(k.words || 0, k.wordGoal) : `${fmtN(k.words)} words`) : '')) : null);
   return el;
 }
@@ -1057,9 +1101,14 @@ function newCard(colId, rowId) {
   change((p) => {
     let last = -1;
     p.cards.forEach((x, ix) => { if (x.colId === colId && x.rowId === rowId) last = ix; });
-    p.cards.splice(last + 1, 0, { id, colId, rowId, title: '', summary: '', notes: '', status: 'idea', entityIds: [], setup: false, payoffId: null, fields: {}, links: [], when: null, game: [], words: null, wordGoal: null });
+    p.cards.splice(last + 1, 0, blankCard(id, colId, rowId));
   }, { render: false });
   editCard(id, true);
+}
+
+function blankCard(id, colId, rowId) {
+  return { id, colId, rowId, title: '', summary: '', notes: '', status: 'idea', entityIds: [], setup: false, payoffId: null, fields: {}, links: [], when: null, game: [], words: null, wordGoal: null,
+    beatId: null, reveals: [], rels: [], raises: [], answers: [], flags: [], arcs: [], clips: [], quests: [], chk: {} };
 }
 
 // ---------- Card dialog ----------
@@ -1112,7 +1161,8 @@ function editCard(id, isNew = false, after = null) {
     wordsBox(p, k, upd),
     gameOn() ? gameBox(p, k, upd) : null,
     h('div', { class: 'field' }, h('span', { class: 'field__label' }, 'Setup & payoff'), setupBox),
-    isSeries() ? timelineFields(p, k, upd, () => d) : null,
+    timelineFields(p, k, upd, () => d),
+    sceneExtras(p, k, upd, () => d),
     h('label', { class: 'field' }, h('span', { class: 'field__label' }, 'Notes'),
       autosize(h('textarea', { class: 'input', rows: 2, value: k().notes, placeholder: 'Anything else: lines of dialogue, research, doubts', oninput: (e) => upd((c) => { c.notes = e.target.value; }) }))),
     h('details', { class: 'more' }, h('summary', {}, 'Move'),
@@ -1200,7 +1250,7 @@ function timelineFields(p, k, upd, dlg) {
     if (!c.links) c.links = [];
     const linkedHere = scopeCards().filter((x) => x !== c && (x.links || []).some((l) => l.id === c.id));
     append(box, [
-      h('div', { class: 'tlf__head' }, icon('timeline', 'ico--accent'), h('strong', {}, 'On the series timeline')),
+      h('div', { class: 'tlf__head' }, icon('timeline', 'ico--accent'), h('strong', {}, isSeries() ? 'On the series timeline' : 'When in the story')),
       h('div', { class: 'row3' },
         h('label', { class: 'field' }, h('span', { class: 'field__label' }, 'Year'),
           h('select', { class: 'input', onchange: (e) => { const v = e.target.value; upd((c) => { c.when = v === '' ? null : { y: +v, p: c.when ? c.when.p : 0, day: c.when ? c.when.day : '' }; }); draw(); } },
@@ -1211,7 +1261,8 @@ function timelineFields(p, k, upd, dlg) {
             cal.parts.map((x, i) => h('option', { value: String(i), selected: !!w && w.p === i }, x)))),
         h('label', { class: 'field' }, h('span', { class: 'field__label' }, 'Day (optional)'),
           h('input', { class: 'input', disabled: !w, value: (w && w.day) || '', placeholder: 'First frost', oninput: (e) => upd((c) => { if (c.when) c.when.day = e.target.value; }) }))),
-      h('div', { class: 'field' }, h('span', { class: 'field__label' }, 'Linked scenes'),
+      whenInfo(c), ageLine(c),
+      !isSeries() ? null : h('div', { class: 'field' }, h('span', { class: 'field__label' }, 'Linked scenes'),
         h('div', { class: 'tlf__links' },
           (c.links || []).map((l, i) => {
             const o = findCard(l.id);
@@ -1264,7 +1315,11 @@ function editColumn(id) {
         h('label', { class: 'field' }, h('span', { class: 'field__label' }, 'Publish date'),
           h('input', { class: 'input', type: 'date', value: c().date || '', onchange: (e) => upd((c) => { c.date = e.target.value; }) })),
         h('label', { class: 'check check--box' },
-          h('input', { type: 'checkbox', checked: !!c().canon, onchange: (e) => upd((c) => { c.canon = e.target.checked; }) }),
+          h('input', { type: 'checkbox', checked: !!c().canon, onchange: async (e) => {
+            const on = e.target.checked;
+            if (on && !(await publishCheck(p, c()))) { e.target.checked = false; return; }
+            upd((c) => { c.canon = on; });
+          } }),
           h('span', {}, h('strong', {}, 'Published'), h('br'), h('span', { class: 'muted small' }, 'Readers have seen it, so it’s canon')))),
     ],
     wide: true,
@@ -1706,11 +1761,13 @@ function viewEntity(p, id) {
         onclick: () => nameDialog({ kind: kindForType(t?.name), useLabel: `Name this ${lower(t?.singular || 'entry')}`,
           onUse: (n) => { upd((e) => { e.name = n; }); nameInput.value = n; } }) }, icon('dice'))),
     h('input', { class: 'input input--lede', value: e.summary, placeholder: 'In one line: who or what this is', 'aria-label': 'One-line summary', oninput: (ev) => upd((e) => { e.summary = ev.target.value; }) }),
+    profileExtras(p, e, upd),
     (t?.fields || []).map((f) => fieldInput(p, f, () => e.fields[f.id], (v) => upd((e) => { e.fields[f.id] = v; }))),
     h('label', { class: 'field' }, h('span', { class: 'field__label' }, 'Notes'),
       autosize(h('textarea', { class: 'input', rows: 4, value: e.notes, placeholder: 'Everything else', oninput: (ev) => upd((e) => { e.notes = ev.target.value; }) }))));
 
   const aside = h('aside', { class: 'entity__aside' },
+    asideExtras(p, e),
     h('h2', { class: 'aside__title' }, 'Appears in'),
     apps.length ? h('ul', { class: 'apps' }, apps.map((k) => {
       const ci = cardInfo(k);
@@ -1736,11 +1793,9 @@ function viewEntity(p, id) {
   return h('div', { class: 'world' }, worldSide(p, e.typeId),
     h('section', { class: 'world__main entity', style: { '--c': t?.color } },
       h('div', { class: 'entity__bar' },
-        h('a', { class: 'back', href: phref('world/' + (t?.id || '')) }, icon('back'), t?.name || 'World'),
+        isChar(e) ? h('a', { class: 'back', href: phref('chars') }, icon('back'), 'Characters') : h('a', { class: 'back', href: phref('world/' + (t?.id || '')) }, icon('back'), t?.name || 'World'),
         h('span', { class: 'spacer' }),
-        gameOn() ? h('div', { class: 'tl-seg', role: 'group', 'aria-label': 'Entry view' },
-          h('button', { class: 'tl-seg__btn' + (S.entityView !== 'sheet' ? ' is-on' : ''), type: 'button', 'aria-pressed': String(S.entityView !== 'sheet'), onclick: () => { S.entityView = 'profile'; render(); } }, 'Profile'),
-          h('button', { class: 'tl-seg__btn' + (S.entityView === 'sheet' ? ' is-on' : ''), type: 'button', 'aria-pressed': String(S.entityView === 'sheet'), onclick: () => { S.entityView = 'sheet'; render(); } }, icon('spark'), ' Game sheet')) : null,
+        entityTabs(e),
         typeSel,
         h('button', { class: 'btn btn--ghost btn--sm btn--danger', type: 'button', onclick: async () => {
           if (await confirmDanger(`Delete ${e.name || 'this entry'}?`, apps.length || linkedFrom.length ? 'It will also be unlinked from every card and entry that mentions it.' : 'It isn’t linked anywhere.')) {
@@ -1754,7 +1809,7 @@ function viewEntity(p, id) {
             go(back);
           }
         } }, icon('trash'), ' Delete')),
-      gameOn() && S.entityView === 'sheet' ? viewSheet(p, e) : h('div', { class: 'entity__cols' }, form, aside)));
+      entityExtra(p, e, () => h('div', { class: 'entity__cols' }, form, aside))));
 }
 
 // ======================================================================
@@ -1877,6 +1932,10 @@ function viewProject(p) {
       autosize(h('textarea', { class: 'input notebook', rows: 6, value: p.notes, 'aria-label': 'Notebook', oninput: (e) => upd(() => { p.notes = e.target.value; }) }))),
     sec('types', 'Entry types', book ? 'Shared by every book in the series. Changes apply to every entry of that type, in every book.' : 'The kinds of things in this world, and the fields each one has. Changes apply to every entry of that type.', typesWrap),
     gameSettings(),
+    sec('checklist', 'Scene checklist', 'Optional fields on every scene card: goal, conflict, outcome and what changes. Scenes where nothing changes get a gentle tag.',
+      h('label', { class: 'check' }, h('input', { type: 'checkbox', checked: !!p.checklist.on, onchange: (e) => change(() => { p.checklist.on = e.target.checked; }) }), ' Show the scene checklist on cards'),
+      p.checklist.on ? h('div', { class: 'row2' }, ['goal', 'conflict', 'outcome', 'change'].map((k) => text(`“${k[0].toUpperCase() + k.slice(1)}” is called`, () => p.checklist.labels[k], (v) => { p.checklist.labels[k] = v || k; }))) : null),
+    sec('clips', 'Clippings', `Links, notes and images for the whole ${book ? 'book' : 'project'}.`, clipsPanel(() => p.clips, (fn) => upd(() => fn(p.clips)))),
     sec('cardfields', 'Extra card fields', 'Fields every scene card gets, on top of title, summary, status and links.',
       fieldsEditor(p, p.cardFields)),
     book ? null : backupSection(),
@@ -2246,6 +2305,7 @@ function viewSeriesSettings(series) {
       autosize(h('textarea', { class: 'input notebook', rows: 6, value: series.notes, 'aria-label': 'Series notebook', oninput: (e) => upd(() => { series.notes = e.target.value; }) }))),
     sec('types', 'Entry types', 'Shared by every book in the series.', typesWrap),
     gameSettings(),
+    sec('clips', 'Clippings', 'Links, notes and images for the whole series.', clipsPanel(() => series.clips, (fn) => upd(() => fn(series.clips)))),
     backupSection(),
     sec('danger', 'Delete', null,
       h('button', { class: 'btn btn--danger', type: 'button', onclick: async () => {
@@ -2281,10 +2341,8 @@ function viewTimeline(series) {
   // Every card, in reading order within its book.
   const items = [];
   for (const b of books) {
-    const ci = (id) => b.columns.findIndex((c) => c.id === id);
-    const ri = (id) => b.rows.findIndex((r) => r.id === id);
-    b.cards.map((k, i) => ({ k, i })).sort((x, y) => ci(x.k.colId) - ci(y.k.colId) || ri(x.k.rowId) - ri(y.k.rowId) || x.i - y.i)
-      .forEach(({ k }, n) => {
+    bookSeq(b)
+      .forEach((k, n) => {
         const col = b.columns.find((c) => c.id === k.colId);
         const stage = col && col.canon ? 'pub' : ['drafted', 'editing', 'final'].includes(k.status) ? 'written' : 'plan';
         const w = k.when;
@@ -2295,7 +2353,7 @@ function viewTimeline(series) {
   const byId = new Map(items.map((it) => [it.k.id, it]));
 
   // Horizontal layout
-  let TW = 0;
+  let TW = 0, calGeo = null;
   const ruler1 = [], ruler2 = [], lines = [];
   if (order === 'world') {
     const counts = Array.from({ length: Y * PN }, () => 0);
@@ -2309,6 +2367,7 @@ function viewTimeline(series) {
     counts.forEach((n, sl) => { slotX[sl] = x; x += Math.max(150, n ? (n - 1) * TL.STEP + TL.CHIP + 32 : 150); });
     TW = x;
     const slotW = (sl) => (sl + 1 < slotX.length ? slotX[sl + 1] : TW) - slotX[sl];
+    calGeo = { slotX, slotW, Y, PN };
     for (let y = 0; y < Y; y++) {
       const a = slotX[y * PN], e = y + 1 < Y ? slotX[(y + 1) * PN] : TW;
       ruler1.push({ label: cal.years[y], left: a, width: e - a });
@@ -2364,6 +2423,8 @@ function viewTimeline(series) {
     h('div', { class: 'tl-toggles', role: 'group', 'aria-label': 'Show' },
       h('span', { class: 'tl-label' }, 'Show'),
       toggle('books', 'Books'), usedTypes.map((t) => toggle(t.id, t.name)), toggle('threads', 'Threads'),
+      order === 'world' ? h('button', { class: 'tl-toggle' + (T.showCal ? ' is-on' : ''), type: 'button', 'aria-pressed': String(!!T.showCal), title: 'Seasons, holidays and moons from the story calendar',
+        onclick: () => { T.showCal = !T.showCal; render(); } }, 'Calendar') : null,
       h('button', { class: 'tl-toggle' + (T.showBeats ? ' is-on' : ''), type: 'button', 'aria-pressed': String(!!T.showBeats), title: 'Show the series arc and each book’s beats',
         onclick: () => { T.showBeats = !T.showBeats; render(); } }, '◆ Beats')),
     h('span', { class: 'spacer' }),
@@ -2425,7 +2486,7 @@ function viewTimeline(series) {
     const c = colorOf(it.b);
     const ci = cardInfo(it.k);
     const w = it.k.when;
-    const tip = `${it.b.title} · ${ci.b.labels.column} ${ci.num} · ${it.k.title || 'Untitled scene'}` + (w && order === 'world' ? ` · ${cal.years[w.y]}, ${cal.parts[w.p]}${w.day ? ' (' + w.day + ')' : ''}` : '') + ` · ${STAGE_LABEL[it.stage]}`;
+    const tip = `${it.b.title} · ${ci.b.labels.column} ${ci.num} · ${it.k.title || 'Untitled scene'}` + (w && order === 'world' ? ` · ${cal.years[w.y]}, ${cal.parts[w.p]}${w.day ? ' (' + w.day + ')' : ''}` : '') + ` · ${STAGE_LABEL[it.stage]}` + agesText(it.k);
     return h('button', { class: `tl-chip tl-chip--${it.stage}` + (hit(it) ? '' : ' is-dim'), type: 'button', title: tip,
       style: { left: it.x - 9 + 'px', top: it.top + 'px', '--c': c }, onclick: () => openCard(it.k.id) },
     h('span', { class: 'tl-chip__dot st-' + it.k.status }),
@@ -2436,6 +2497,7 @@ function viewTimeline(series) {
 
   const parts = [gridLayer, ruler];
 
+  if (T.showCal && calGeo) parts.push(calendarRow(series, calGeo, TW, labelCell, track));
   if (T.showBeats) parts.push(...timelineBeats(series, { shown, order, TW, ruler1, books, colorOf, labelCell, track }));
 
   if (!T.hide.books) {
@@ -2595,11 +2657,16 @@ const sameName = (a, b) => String(a || '').trim().toLowerCase() === String(b || 
 // Every card in reading order: the whole series, or the project.
 function readingSeq() {
   const books = isSeries() ? S.project.books : [S.project];
-  return books.flatMap((b) => {
-    const ci = (id) => b.columns.findIndex((c) => c.id === id);
-    const ri = (id) => b.rows.findIndex((r) => r.id === id);
-    return b.cards.map((k, i) => ({ k, i })).sort((x, y) => ci(x.k.colId) - ci(y.k.colId) || ri(x.k.rowId) - ri(y.k.rowId) || x.i - y.i).map(({ k }) => ({ k, b }));
-  });
+  return books.flatMap((b) => bookSeq(b).map((k) => ({ k, b })));
+}
+// One book's cards in reading order: part by part; inside a part, the order
+// set on the Braid if there is one, otherwise thread by thread.
+function bookSeq(b) {
+  const ci = new Map(b.columns.map((c, i) => [c.id, i]));
+  const ri = new Map(b.rows.map((r, i) => [r.id, i]));
+  return b.cards.map((k, i) => ({ k, i })).sort((x, y) => (ci.get(x.k.colId) ?? 1e6) - (ci.get(y.k.colId) ?? 1e6)
+    || (Number.isFinite(x.k.seq) && Number.isFinite(y.k.seq) ? x.k.seq - y.k.seq : 0)
+    || (ri.get(x.k.rowId) ?? 1e6) - (ri.get(y.k.rowId) ?? 1e6) || x.i - y.i).map(({ k }) => k);
 }
 
 // A character's sheet over the story: the start, then one step per scene with events.
@@ -3232,7 +3299,7 @@ function newSceneForBeat(p, b) {
   const ci = plannedCol(p, b);
   if (ci < 0 || !p.rows.length) { toast(`Add a ${lower(p.labels.column)} and a ${lower(p.labels.row)} on the grid first.`); return; }
   const id = uid();
-  change(() => { p.cards.push({ id, colId: p.columns[ci].id, rowId: p.rows[0].id, title: '', summary: '', notes: '', status: 'idea', entityIds: [], setup: false, payoffId: null, fields: {}, links: [], when: null, game: [], words: null, wordGoal: null, beatId: b.id }); });
+  change(() => { p.cards.push({ ...blankCard(id, p.columns[ci].id, p.rows[0].id), beatId: b.id }); });
   editCard(id, true);
 }
 
@@ -3310,11 +3377,11 @@ function beatEditor(p, f, b, i, series) {
 // ---------- Story notes: a free-form document per book, project and series ----------
 
 // Notes or Beats & shape. Until you choose, a flow with no beats opens on its notes.
-function flowView(f) {
-  const v = flowPref('view');
-  return v === 'notes' || v === 'beats' ? v : f.beats.length ? 'beats' : 'notes';
+function flowView() {
+  return S.route.tab === 'notes' ? 'notes' : 'beats';
 }
-function flowModes(f, cur = flowView(f)) {
+function flowModes() { return null; }
+function flowModesOld(f, cur = flowView(f)) {
   const b = (v, label, extra) => h('button', { class: 'tl-seg__btn' + (cur === v ? ' is-on' : ''), type: 'button', 'aria-pressed': String(cur === v),
     onclick: () => { setFlowPref('view', v); render(); } }, label, extra ? h('span', { class: 'flow-modes__n' }, extra) : null);
   const words = notesWords(f.notes);
@@ -3464,7 +3531,7 @@ function notesView(p, f, isSeriesArc) {
       f.beats.length ? h('ol', { class: 'notes__blist' }, f.beats.map((b, i) => {
         const done = isSeriesArc ? seriesBeatDone(S.project, b) : beatScenes(p, b).length > 0;
         return h('li', {}, h('button', { class: 'notes__bi', type: 'button', title: b.text || 'Open in Beats & shape',
-          onclick: () => { persist(); setFlowPref('view', 'beats'); render(); requestAnimationFrame(() => { const el = document.querySelector(`[data-beat="${b.id}"]`); if (el) { el.scrollIntoView({ block: 'center' }); el.querySelector('.beat__name')?.focus({ preventScroll: true }); } }); } },
+          onclick: () => { persist(); go(isSeries() && !S.bookId ? `s/${encodeURIComponent(S.slug)}/flow` : pbase('flow')); requestAnimationFrame(() => { const el = document.querySelector(`[data-beat="${b.id}"]`); if (el) { el.scrollIntoView({ block: 'center' }); el.querySelector('.beat__name')?.focus({ preventScroll: true }); } }); } },
         h('span', { class: 'fbeat__mark' + (done ? ' is-done' : '') }, done ? '✓' : String(i + 1)), h('span', { class: 'notes__bn' }, b.name || 'Untitled beat')));
       })) : h('p', { class: 'muted small' }, 'None yet. Select a line in your notes and press “Make a beat”.'),
     ]);
@@ -3727,3 +3794,11 @@ function beatBox(p, k, upd, dlg) {
 }
 
 boot();
+
+// For the feature modules (x-*.js).
+export {
+  S, store, DEMO, P, isSeries, inSeriesTop, scopeCards, findCard, bookOf, cardInfo, cardLabel, appearances, openCard, editCard, change, render, saveNow,
+  go, href, phref, shref, pbase, entity, typeOf, plural, lower, fmtN, readingSeq, bookSeq, progressOf, sheetAt, gameOn, sheetChars, initialsOf, sameName,
+  newEntity, entityPicker, cardOptions, cardSelect, cardLabel as cardName, colLabel, colName, colRef, beatScenes, plannedCol, blankCard, viewGrid, viewSheet,
+  timelineFields, worldSide, numberInput, flowPref, setFlowPref, nameDialog,
+};

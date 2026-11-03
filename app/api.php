@@ -17,6 +17,7 @@ const KEEP_RECENT = 40;   // most recent saves kept per project
 const KEEP_DAYS = 120;    // plus the first save of each day, this many days back
 const SESSION_DAYS = 90;
 const MAX_BYTES = 8 * 1024 * 1024;
+const MAX_UPLOAD = 12 * 1024 * 1024;
 const COOKIE = 'planner_auth';
 
 $DATA = getenv('PLANNER_DATA_DIR') ?: __DIR__ . '/data';
@@ -283,6 +284,48 @@ switch ($action) {
         $json = read_guarded("$DATA/backups/$slug/$id.php");
         if ($json === null) fail('That backup doesn’t exist.', 404, 'missing');
         out(['data' => json_decode($json, true)]);
+
+    case 'upload':
+        // Images for maps, mood boards and clippings. Stored by content hash, so
+        // the same picture uploaded twice is kept once.
+        if ($method !== 'POST') fail('Bad request.', 405);
+        $raw = file_get_contents('php://input', false, null, 0, MAX_UPLOAD + 1);
+        if ($raw === false || $raw === '') fail('Nothing was uploaded.', 400);
+        if (strlen($raw) > MAX_UPLOAD) fail('That image is too large (12 MB limit).', 413);
+        $info = @getimagesizefromstring($raw);
+        $ext = ['image/png' => 'png', 'image/jpeg' => 'jpg', 'image/gif' => 'gif', 'image/webp' => 'webp'][$info['mime'] ?? ''] ?? null;
+        if (!$info || !$ext) fail('Only PNG, JPEG, GIF and WebP images can be uploaded.', 415);
+        $dir = "$DATA/files";
+        if (!is_dir($dir) && !@mkdir($dir, 0750, true)) fail('The planner can’t create its image folder on the server.', 500);
+        $name = substr(hash('sha256', $raw), 0, 20) . '.' . $ext;
+        if (!is_file("$dir/$name") && file_put_contents("$dir/$name", $raw, LOCK_EX) === false) fail('The server couldn’t save the image.', 500);
+        out(['name' => $name, 'w' => $info[0], 'h' => $info[1]]);
+
+    case 'file':
+        $n = $_GET['n'] ?? '';
+        if (!preg_match('/^[a-f0-9]{20}\.(png|jpg|gif|webp)$/', $n, $m)) fail('Bad request.', 400);
+        $f = "$DATA/files/$n";
+        if (!is_file($f)) fail('That image isn’t on the server.', 404, 'missing');
+        header('Content-Type: ' . ['png' => 'image/png', 'jpg' => 'image/jpeg', 'gif' => 'image/gif', 'webp' => 'image/webp'][$m[1]]);
+        header('Cache-Control: private, max-age=31536000, immutable');
+        header('Content-Length: ' . filesize($f));
+        readfile($f);
+        exit;
+
+    case 'ideas':
+        // The idea inbox: one list per person, shared by every project.
+        $file = "$DATA/ideas.php";
+        $current = read_guarded($file);
+        if ($method === 'GET') {
+            $d = $current === null ? ['ideas' => []] : (json_decode($current, true) ?: ['ideas' => []]);
+            out(['ideas' => $d['ideas'] ?? [], 'rev' => $current === null ? null : rev_of($current)]);
+        }
+        $b = body_json();
+        if (!isset($b['ideas']) || !is_array($b['ideas'])) fail('Bad request.', 400);
+        if (($b['rev'] ?? null) !== ($current === null ? null : rev_of($current))) fail('The inbox changed on another device.', 409, 'conflict');
+        $json = json_encode(['ideas' => $b['ideas']], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+        write_atomic($file, $json);
+        out(['rev' => rev_of($json)]);
 
     case 'deleted':
         // Projects that only exist as backups (deleted), so they can be brought back.
