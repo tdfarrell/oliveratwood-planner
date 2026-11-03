@@ -8,6 +8,7 @@ import { viewMaps, viewCalendar, viewTravel, viewFactions, viewMood, calendarRow
 import { viewItems, viewLoot, viewQuests, viewSysMsg } from './x-game.js';
 import { viewChecks, viewPresence, checksCount } from './x-checks.js';
 import { ideasButton, viewIdeasPage, openIdeas, loadIdeas } from './x-ideas.js';
+import { charType } from './x-common.js';
 import { ServerStore, LocalStore, unsaved } from './store.js';
 import { KINDS, FLAVORS, kindForType, generate } from './names.js';
 
@@ -1666,17 +1667,21 @@ function nameDialog({ kind, onUse, useLabel, createType } = {}) {
 // World
 // ======================================================================
 
+// Entry types shown under World: everything but characters, which have their own tab.
+const worldTypes = (p) => { const ct = charType(); return p.types.filter((t) => !ct || t.id !== ct.id); };
 function worldSide(p, current) {
   return h('nav', { class: 'side', 'aria-label': 'Entry types' },
     h('div', { class: 'side__label' }, 'World'),
-    p.types.map((t) => h('a', { class: 'side__item' + (current === t.id ? ' is-on' : ''), href: phref('world/' + t.id), style: { '--c': t.color } },
+    worldTypes(p).map((t) => h('a', { class: 'side__item' + (current === t.id ? ' is-on' : ''), href: phref('world/' + t.id), style: { '--c': t.color } },
       h('span', { class: 'dot' }), h('span', { class: 'side__name' }, t.name),
       h('span', { class: 'side__count' }, String(p.entities.filter((e) => e.typeId === t.id).length)))),
     h('a', { class: 'side__item side__item--edit', href: phref('project') + '#types' }, icon('gear'), h('span', {}, 'Edit types & fields')));
 }
 
 function viewWorld(p, typeId) {
-  const t = p.types.find((x) => x.id === typeId) || p.types[0];
+  const ct = charType();
+  if (ct && typeId === ct.id) { setTimeout(() => go(pbase('chars')), 0); return h('div', {}); }
+  const t = worldTypes(p).find((x) => x.id === typeId) || worldTypes(p)[0];
   if (!t) {
     return h('div', { class: 'wrap empty' },
       h('h1', { class: 'display' }, 'No entry types yet'),
@@ -1790,7 +1795,9 @@ function viewEntity(p, id) {
       h('ul', { class: 'apps' }, linkedFrom.map((l) => h('li', {}, h('a', { class: 'app', href: phref('e/' + l.e.id), style: { '--c': l.color } },
         h('span', { class: 'app__text' }, h('span', { class: 'app__title' }, l.e.name || 'Unnamed'), h('span', { class: 'app__sub' }, l.field))))))] : null);
 
-  return h('div', { class: 'world' }, worldSide(p, e.typeId),
+  return h('div', { class: 'world' }, (isChar(e) ? h('nav', { class: 'side', 'aria-label': 'Characters' }, h('div', { class: 'side__label' }, 'Characters'),
+    [['chars', 'All'], ['web', 'Relationships'], ['arcs', 'Arcs'], ['family', 'Family trees']].map(([t, l]) => h('a', { class: 'side__item', href: phref(t) }, h('span', { class: 'side__name' }, l))))
+    : worldSide(p, e.typeId)),
     h('section', { class: 'world__main entity', style: { '--c': t?.color } },
       h('div', { class: 'entity__bar' },
         isChar(e) ? h('a', { class: 'back', href: phref('chars') }, icon('back'), 'Characters') : h('a', { class: 'back', href: phref('world/' + (t?.id || '')) }, icon('back'), t?.name || 'World'),
