@@ -218,7 +218,7 @@ function setStatus(kind, msg = '') {
   }[kind];
   el.className = 'status status--' + kind;
   el.textContent = text;
-  el.title = kind === 'error' ? (msg || '') + ' (your changes are kept on this device and will retry)' : '';
+  el.title = kind === 'error' ? (msg || '') + ' (your changes are kept on this device and will retry)' : text;
 }
 
 window.addEventListener('beforeunload', (e) => { if (S.dirty || S.saving) { save(); e.preventDefault(); } });

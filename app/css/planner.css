@@ -183,6 +183,9 @@ a.chip:hover { background: color-mix(in srgb, var(--c, var(--rule)) 24%, var(--s
 .tab.is-on { color: var(--ink); background: var(--sheet); box-shadow: var(--shadow); }
 .top__right { margin-left: auto; display: flex; align-items: center; gap: .8rem; }
 .status { font-size: .82rem; color: var(--ink-2); white-space: nowrap; display: inline-flex; align-items: center; gap: .35rem; }
+/* A fixed width, so switching between Saved / Unsaved / Saving… never reflows the header. Longer messages are cut short; hover shows them in full. */
+.top__right .status { width: 5.6rem; flex: none; overflow: hidden; text-overflow: ellipsis; display: inline-block; }
+.top__right .status::before { display: inline-block; margin-right: .35rem; vertical-align: .05rem; }
 .status::before { content: ""; width: .5rem; height: .5rem; border-radius: 50%; background: var(--ok); }
 .status--saving::before, .status--unsaved::before { background: #C99A2B; }
 .status--offline::before, .status--error::before { background: var(--danger); }
@@ -1795,7 +1798,7 @@ a.chip:hover { background: color-mix(in srgb, var(--c, var(--rule)) 24%, var(--s
 .slr input { flex: 1; min-width: 0; accent-color: var(--c); }
 .slr__n { width: 2rem; text-align: right; font-size: .82rem; color: var(--ink-2); font-variant-numeric: tabular-nums; }
 @media (max-width: 640px) { .sltable { grid-template-columns: repeat(3, minmax(0, 1fr)) 2rem; gap: .2rem .5rem; } .sltable > .xlabel:first-child { display: none; } .sltable__u { grid-column: 1 / -1; } .slr__n { display: none; } }
-@media (max-width: 640px) { .top__right { gap: .4rem; min-width: 0; } .top__right .status { font-size: 0; gap: 0; } }
+@media (max-width: 640px) { .top__right { gap: .4rem; min-width: 0; } .top__right .status { font-size: 0; gap: 0; width: .5rem; } }
 
 /* Ending first */
 .efb__head { display: flex; gap: .7rem; align-items: flex-start; }
