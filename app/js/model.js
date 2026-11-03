@@ -344,7 +344,7 @@ export function importProject(series, project, groupId) {
   for (const e of project.entities || []) {
     const fields = {};
     for (const [k, v] of Object.entries(e.fields || {})) fields[fieldMap[k] || k] = v;
-    series.entities.push({ ...e, typeId: typeMap[e.typeId] || e.typeId, fields });
+    series.entities.push(normalizeEntity({ ...e, typeId: typeMap[e.typeId] || e.typeId, fields }));
   }
   for (const n of project.nameBank || []) if (!series.nameBank.some((x) => x.name === n.name)) series.nameBank.push(n);
   if (project.game && project.game.on && !series.game.on) series.game = normalizeGame(JSON.parse(JSON.stringify(project.game)));

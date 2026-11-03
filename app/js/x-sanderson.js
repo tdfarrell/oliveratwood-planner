@@ -563,6 +563,7 @@ export function viewEpigraphs(p) {
   const dl = h('datalist', { id: 'epi-src' }, srcNames.map((n) => h('option', { value: n })));
   return h('div', { class: 'wrap wrap--wide x' }, pageHead('Epigraphs', blurb), dl,
     panel('epis', p.columns.map((c, i) => {
+      if (!c.epi) c.epi = { text: '', src: '', where: '', reveals: [], clue: false };
       const e = c.epi;
       const bad = issues.filter((x) => x.c === c);
       return h('div', { class: 'epi' + (c.interlude ? ' is-interlude' : '') },

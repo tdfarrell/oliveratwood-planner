@@ -1,7 +1,7 @@
 import { h, append, clear, icon, openDialog, choose, confirmDanger, ask, toast, autosize } from './dom.js';
 import { TEMPLATES, PALETTE, FIELD_TYPES, STATUSES, STATUS_SHORT, uid, slugify, numeral, roman, normalize, valueText, actsOn, syncActs,
   prepare, newSeries, newBook, importProject, findDuplicates, mergeEntities, LINE_COLORS, LINK_KINDS, BOOK_KINDS,
-  GAME_EVENTS, blankSheet, applyEvent, describeEvent, cloneSheet, STRUCTURES, makeBeats, WORLD_KEYS } from './model.js';
+  GAME_EVENTS, normalizeEntity, blankSheet, applyEvent, describeEvent, cloneSheet, STRUCTURES, makeBeats, WORLD_KEYS } from './model.js';
 import { viewPromises, viewWhatifs, viewBraid, viewRevisions, sceneExtras, cardExtras, publishCheck, branchBanner } from './x-story.js';
 import { viewChars, viewWeb, viewArcs, viewFamily, viewNames, viewSecrets, entityTabs, entityExtra, ageLine, isChar, profileExtras, asideExtras, agesText } from './x-people.js';
 import { viewMaps, viewCalendar, viewTravel, viewFactions, viewMood, calendarRow, whenInfo, clipsPanel } from './x-world.js';
@@ -1058,7 +1058,7 @@ function addAct() {
   const id = uid();
   change((p) => {
     p.acts.push({ id, title: '', notes: '' });
-    p.columns.push({ id: uid(), actId: id, title: '', teaser: '', recap: '', notes: '', date: '', canon: false });
+    p.columns.push({ id: uid(), actId: id, title: '', teaser: '', recap: '', notes: '', date: '', canon: false, interlude: false, passes: {}, epi: { text: '', src: '', where: '', reveals: [], clue: false } });
     syncActs(p);
   });
   requestAnimationFrame(() => { const s = document.querySelector('.grid-scroll'); if (s) s.scrollLeft = s.scrollWidth; });
@@ -1129,7 +1129,7 @@ function newCard(colId, rowId) {
 
 function blankCard(id, colId, rowId) {
   return { id, colId, rowId, title: '', summary: '', notes: '', status: 'idea', entityIds: [], setup: false, payoffId: null, fields: {}, links: [], when: null, game: [], words: null, wordGoal: null,
-    beatId: null, reveals: [], rels: [], raises: [], answers: [], flags: [], arcs: [], clips: [], quests: [], chk: {} };
+    beatId: null, reveals: [], rels: [], raises: [], answers: [], moves: [], magic: [], explains: [], payoff: false, past: '', flags: [], arcs: [], clips: [], quests: [], chk: {} };
 }
 
 // ---------- Card dialog ----------
@@ -1472,7 +1472,7 @@ function download(name, text, type = 'application/json') {
 // ======================================================================
 
 function newEntity(typeId, name = '') {
-  const e = { id: uid(), typeId, name, summary: '', fields: {}, notes: '' };
+  const e = normalizeEntity({ id: uid(), typeId, name, summary: '', fields: {}, notes: '' });
   change((p) => p.entities.push(e), { render: false });
   return e;
 }
