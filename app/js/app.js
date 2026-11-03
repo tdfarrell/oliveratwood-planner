@@ -3435,6 +3435,30 @@ function flowModesOld(f, cur = flowView(f)) {
 // Only these tags survive; everything else is unwrapped to its text. No attributes at all.
 const NOTE_TAGS = { H2: 'h2', H3: 'h3', P: 'p', DIV: 'p', UL: 'ul', OL: 'ol', LI: 'li', B: 'b', STRONG: 'b', I: 'i', EM: 'i', U: 'u', S: 's', STRIKE: 's', BLOCKQUOTE: 'blockquote', BR: 'br', H1: 'h2', H4: 'h3', H5: 'h3', H6: 'h3' };
 const NOTE_BLOCKS = new Set(['h2', 'h3', 'p', 'ul', 'ol', 'blockquote']);
+// Highlighter colours. Saved as <mark data-c="yellow">; while editing they are
+// spans with a background colour, which is what the browser's editor works with.
+const HILITES = [['yellow', 'Yellow', '#FFE58A'], ['green', 'Green', '#BDEBC5'], ['blue', 'Blue', '#BFDDF7'], ['pink', 'Pink', '#F8C6D8'], ['orange', 'Orange', '#FFD1A8']];
+const HL_RGB = HILITES.map(([k, , hex]) => [k, [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16))]);
+// Which highlighter colour an element carries, if any.
+function hiliteOf(n) {
+  if (n.tagName === 'MARK') return HILITES.some(([k]) => k === n.dataset.c) ? n.dataset.c : 'yellow';
+  if (n.tagName !== 'SPAN' && n.tagName !== 'FONT') return null;
+  const m = /rgba?\((\d+),\s*(\d+),\s*(\d+)(?:,\s*([\d.]+))?\)/.exec(n.style.backgroundColor || '');
+  if (!m || (m[4] !== undefined && +m[4] === 0)) return null;
+  const c = [+m[1], +m[2], +m[3]];
+  const hit = HL_RGB.find(([, r]) => r.every((v, i) => Math.abs(v - c[i]) <= 6));
+  return hit ? hit[0] : null;
+}
+// Saved marks become editable spans.
+function marksToSpans(root) {
+  for (const m of [...root.querySelectorAll('mark')]) {
+    const span = document.createElement('span');
+    span.style.backgroundColor = (HILITES.find(([k]) => k === m.dataset.c) || HILITES[0])[2];
+    while (m.firstChild) span.append(m.firstChild);
+    m.replaceWith(span);
+  }
+  return root;
+}
 function cleanNotes(src) {
   const out = document.createElement('div');
   const walk = (from, to) => {
@@ -3442,6 +3466,16 @@ function cleanNotes(src) {
       if (n.nodeType === 3) { to.append(document.createTextNode(n.nodeValue)); continue; }
       if (n.nodeType !== 1) continue;
       if (['SCRIPT', 'STYLE', 'TEMPLATE', 'IFRAME', 'OBJECT', 'SVG', 'IMG', 'META', 'LINK', 'TITLE'].includes(n.tagName)) continue;
+      const hl = hiliteOf(n);
+      if (hl) {
+        // A highlight inside a highlight just continues the outer one.
+        if (to.closest && to.closest('mark')) { walk(n, to); continue; }
+        const mk = document.createElement('mark');
+        mk.dataset.c = hl;
+        to.append(mk);
+        walk(n, mk);
+        continue;
+      }
       const tag = NOTE_TAGS[n.tagName];
       if (!tag) { walk(n, to); continue; }
       // A block inside a line (Safari and some pastes put a new line's <div> inside the <p> or <li>
@@ -3500,7 +3534,7 @@ const NOTES_STARTER = [
 function notesView(p, f, isSeriesArc) {
   const ed = h('div', { class: 'notes__ed', contenteditable: 'true', role: 'textbox', 'aria-multiline': 'true', 'aria-label': 'Story notes', spellcheck: 'true',
     'data-placeholder': 'Get the whole story out. Headings, bullets, half-ideas, questions: anything goes. Select a line and press “Make a beat” when something is ready.' });
-  append(ed, [...notesToDom(f.notes).childNodes]);
+  append(ed, [...marksToSpans(notesToDom(f.notes)).childNodes]);
   const count = h('span', { class: 'muted small' });
   const showCount = () => { const w = (ed.innerText.match(/[\p{L}\p{N}’']+/gu) || []).length; count.textContent = w ? `${w.toLocaleString()} words` : ''; };
   showCount();
@@ -3536,6 +3570,53 @@ function notesView(p, f, isSeriesArc) {
 
   const tb = (label, title, fn, cls = '') => h('button', { class: 'notes__tb ' + cls, type: 'button', title, 'aria-label': title,
     onmousedown: (e) => e.preventDefault(), onclick: fn }, label);
+
+  // ---------- Highlighter ----------
+  const hlKey = 'planner:hilite';
+  let hlColor = (() => { try { const v = localStorage.getItem(hlKey); return HILITES.some(([k]) => k === v) ? v : 'yellow'; } catch { return 'yellow'; } })();
+  const hlHex = (k) => (HILITES.find(([x]) => x === k) || HILITES[0])[2];
+  // The highlight colour at the cursor (or the start of the selection).
+  const hiliteAt = () => {
+    const sel = getSelection();
+    if (!sel.rangeCount || !ed.contains(sel.anchorNode)) return null;
+    for (let n = sel.anchorNode.nodeType === 1 ? sel.anchorNode : sel.anchorNode.parentElement; n && n !== ed; n = n.parentElement) { const c = hiliteOf(n); if (c) return c; }
+    return null;
+  };
+  const paint = (color) => {
+    const sel = getSelection();
+    if (!sel.rangeCount || sel.isCollapsed || !ed.contains(sel.anchorNode)) { toast('Select some text to highlight.'); return; }
+    ed.focus();
+    try { document.execCommand('styleWithCSS', false, true); } catch { /* ignore */ }
+    document.execCommand('hiliteColor', false, color ? hlHex(color) : 'transparent');
+    try { document.execCommand('styleWithCSS', false, false); } catch { /* ignore */ }
+    // Tidy up: drop "no highlight" spans so nothing invisible piles up.
+    for (const sp of [...ed.querySelectorAll('span')]) {
+      if (!hiliteOf(sp) && sp.style.backgroundColor) { sp.style.backgroundColor = ''; if (!sp.getAttribute('style')) sp.removeAttribute('style'); }
+    }
+    soon(); syncTools();
+  };
+  const highlight = () => {
+    const sel = getSelection();
+    const whole = sel.rangeCount && !sel.isCollapsed && hiliteAt() === hlColor && (() => {
+      // Click again on text that's all one highlight to remove it.
+      const r = sel.getRangeAt(0);
+      const ends = [r.startContainer, r.endContainer].map((n) => { for (let x = n.nodeType === 1 ? n : n.parentElement; x && x !== ed; x = x.parentElement) if (hiliteOf(x)) return x; return null; });
+      return ends[0] && ends[0] === ends[1];
+    })();
+    paint(whole ? null : hlColor);
+  };
+  const hlMenu = h('div', { class: 'hlmenu', role: 'menu', hidden: true, 'aria-label': 'Highlight colour' },
+    HILITES.map(([k, label, hex]) => h('button', { class: 'hlmenu__c', type: 'button', role: 'menuitem', title: label, 'aria-label': `Highlight ${label.toLowerCase()}`, style: { background: hex },
+      onmousedown: (e) => e.preventDefault(), onclick: () => { hlColor = k; try { localStorage.setItem(hlKey, k); } catch { /* private mode */ } hlSwatch.style.background = hex; hlMenu.hidden = true; paint(k); } })),
+    h('button', { class: 'hlmenu__off', type: 'button', role: 'menuitem', onmousedown: (e) => e.preventDefault(), onclick: () => { hlMenu.hidden = true; paint(null); } }, 'No highlight'));
+  const hlSwatch = h('span', { class: 'notes__hl', style: { background: hlHex(hlColor) } }, 'ab');
+  const hlMore = h('button', { class: 'notes__tb notes__tb--more', type: 'button', title: 'Highlight colour', 'aria-label': 'Highlight colour', 'aria-haspopup': 'menu',
+    onmousedown: (e) => e.preventDefault(), onclick: () => { hlMenu.hidden = !hlMenu.hidden; } }, '▾');
+  const hlWrap = h('span', { class: 'notes__hlwrap' });
+  // One page-wide listener closes whichever colour menu is open.
+  S.hlClose = (e) => { if (hlWrap.isConnected && !hlMenu.hidden && !hlWrap.contains(e.target)) hlMenu.hidden = true; };
+  if (!S.hlListening) { S.hlListening = true; document.addEventListener('mousedown', (e) => S.hlClose && S.hlClose(e)); }
+  hlMenu.addEventListener('keydown', (e) => { if (e.key === 'Escape') { hlMenu.hidden = true; ed.focus(); } });
   const tools = {
     h2: tb('H1', 'Section heading (type # then space)', () => block('h2'), 'is-h'),
     h3: tb('H2', 'Subheading (type ## then space)', () => block('h3'), 'is-h'),
@@ -3545,12 +3626,14 @@ function notesView(p, f, isSeriesArc) {
     b: tb(h('b', {}, 'B'), 'Bold (Ctrl/⌘ B)', () => cmd('bold')),
     i: tb(h('i', {}, 'I'), 'Italic (Ctrl/⌘ I)', () => cmd('italic')),
     s: tb(h('s', {}, 'S'), 'Strike through: done with this idea', () => cmd('strikeThrough')),
+    hl: tb(hlSwatch, 'Highlight (Ctrl/⌘ Shift H). Click again to remove.', () => highlight()),
   };
+  append(hlWrap, [tools.hl, hlMore, hlMenu]);
   const syncTools = () => {
     const cur = currentBlock();
     const tag = cur ? cur.tagName.toLowerCase() : '';
     const inList = (k) => !!(cur && cur.closest(k));
-    const on = { h2: tag === 'h2', h3: tag === 'h3', quote: tag === 'blockquote', ul: inList('ul'), ol: inList('ol') };
+    const on = { h2: tag === 'h2', h3: tag === 'h3', quote: tag === 'blockquote', ul: inList('ul'), ol: inList('ol'), hl: !!hiliteAt() };
     for (const k of ['b', 'i', 's']) { try { on[k] = document.queryCommandState({ b: 'bold', i: 'italic', s: 'strikeThrough' }[k]); } catch { on[k] = false; } }
     for (const [k, el] of Object.entries(tools)) { el.classList.toggle('is-on', !!on[k]); el.setAttribute('aria-pressed', String(!!on[k])); }
     const has = selectedText().length > 0;
@@ -3614,6 +3697,7 @@ function notesView(p, f, isSeriesArc) {
 
   // Markdown-style shortcuts at the start of a line.
   ed.addEventListener('keydown', (e) => {
+    if ((e.ctrlKey || e.metaKey) && e.shiftKey && (e.key === 'H' || e.key === 'h')) { e.preventDefault(); highlight(); return; }
     // A new line is a change of structure: save it right away rather than after the pause.
     if (e.key === 'Enter') setTimeout(persist, 0);
     if (e.key === 'Tab') {
@@ -3644,7 +3728,7 @@ function notesView(p, f, isSeriesArc) {
     const text = e.clipboardData.getData('text/plain');
     e.preventDefault();
     if (html) {
-      const clean = cleanNotes(new DOMParser().parseFromString(html, 'text/html').body);
+      const clean = marksToSpans(cleanNotes(new DOMParser().parseFromString(html, 'text/html').body));
       document.execCommand('insertHTML', false, clean.innerHTML);
     } else document.execCommand('insertText', false, text);
     soon();
@@ -3665,7 +3749,7 @@ function notesView(p, f, isSeriesArc) {
   return h('div', { class: 'notes' },
     h('section', { class: 'notes__doc flow-card' },
       h('div', { class: 'notes__bar', role: 'toolbar', 'aria-label': 'Formatting' },
-        tools.h2, tools.h3, h('span', { class: 'notes__sep' }), tools.ul, tools.ol, tools.quote, h('span', { class: 'notes__sep' }), tools.b, tools.i, tools.s,
+        tools.h2, tools.h3, h('span', { class: 'notes__sep' }), tools.ul, tools.ol, tools.quote, h('span', { class: 'notes__sep' }), tools.b, tools.i, tools.s, hlWrap,
         h('span', { class: 'spacer' }), count, makeBeat),
       f.notes ? null : h('div', { class: 'notes__start' }, starter),
       ed),
