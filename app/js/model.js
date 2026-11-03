@@ -708,6 +708,8 @@ export function normalizeEntity(e) {
   for (const k of ['aliases', 'wrong', 'family', 'mood', 'clips', 'sliders', 'facts']) e[k] = arr(e[k]);
   e.voice = Object.assign({ talk: '', dialect: '', loves: [], never: [], lines: [] }, e.voice);
   e.arc = Object.assign({ type: '', want: '', need: '', wound: '', lie: '', truth: '' }, e.arc);
+  e.bg = Object.assign({ story: '', origin: '', upbringing: '', work: '', before: '', hidden: '', events: [] }, e.bg);
+  e.bg.events = arr(e.bg.events);
   e.born = e.born && Number.isInteger(e.born.y) ? e.born : null;
   e.say = e.say || ''; e.role = e.role || ''; e.reportsTo = e.reportsTo || null;
   return e;

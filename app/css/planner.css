@@ -1892,3 +1892,19 @@ a.chip:hover { background: color-mix(in srgb, var(--c, var(--rule)) 24%, var(--s
 .fsh__cand { display: grid; grid-template-columns: 1fr auto; gap: .5rem; align-items: center; padding: .45rem 0; border-top: 1px solid var(--rule-soft); }
 
 .input--auto { width: auto; max-width: 100%; }
+
+/* Character background */
+.bg { max-width: 64rem; }
+.bg__story { font-family: var(--read); font-size: 1rem; line-height: 1.6; }
+.bg__grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .4rem 1rem; }
+.bg__wide { grid-column: 1 / -1; display: flex; flex-direction: column; gap: .2rem; }
+@media (max-width: 700px) { .bg__grid { grid-template-columns: minmax(0, 1fr); } }
+.bg__events { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; }
+.bg__ev { display: grid; grid-template-columns: 8rem minmax(0, 1fr) auto; gap: .6rem; align-items: start; padding: .5rem 0; border-top: 1px solid var(--rule-soft); }
+.bg__what { display: flex; flex-direction: column; gap: .3rem; min-width: 0; }
+.bg__what .xrow .input { flex: 0 1 16rem; min-width: 0; }
+.bg__btns { display: flex; gap: .1rem; }
+@media (max-width: 560px) { .bg__ev { grid-template-columns: minmax(0, 1fr) auto; } .bg__when { grid-column: 1 / -1; } }
+.bg__peek { margin: 0 0 .2rem; white-space: pre-line; }
+.bg__what > .input { width: 100%; max-width: none; }
+.bg .xpanel > .btn { align-self: flex-start; }

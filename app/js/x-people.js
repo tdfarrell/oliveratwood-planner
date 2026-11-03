@@ -47,7 +47,7 @@ const yearLabel = (y) => { const Y = P().calendar.years; return y >= 0 && y < Y.
 // ======================================================================
 
 export function entityTabs(e) {
-  const tabs = [['profile', 'Profile'], isChar(e) ? ['voice', 'Voice'] : null, isChar(e) ? ['arc', 'Arc'] : null, isChar(e) ? ['family', 'Family'] : null,
+  const tabs = [['profile', 'Profile'], isChar(e) ? ['bg', 'Background'] : null, isChar(e) ? ['voice', 'Voice'] : null, isChar(e) ? ['arc', 'Arc'] : null, isChar(e) ? ['family', 'Family'] : null,
     gameOn() ? ['sheet', 'Game sheet'] : null, ['iceberg', `Iceberg${e.facts.length ? ' ' + e.facts.length : ''}`], ['clips', `Clippings${e.clips.length ? ' ' + e.clips.length : ''}`], ['mood', `Mood board${e.mood.length ? ' ' + e.mood.length : ''}`]].filter(Boolean);
   const cur = tabs.some(([v]) => v === S.entityView) ? S.entityView : 'profile';
   return seg(tabs, cur, (v) => { S.entityView = v; render(); }, 'Entry view');
@@ -56,6 +56,7 @@ export function entityTabs(e) {
 export function entityExtra(p, e, profile) {
   const v = S.entityView;
   const upd = (fn) => change(() => fn(e), { render: false });
+  if (v === 'bg' && isChar(e)) return backgroundView(p, e, upd);
   if (v === 'voice' && isChar(e)) return voiceView(e, upd);
   if (v === 'arc' && isChar(e)) return arcView(e, upd);
   if (v === 'family' && isChar(e)) return familyEditor(e);
@@ -104,6 +105,11 @@ export function asideExtras(p, e) {
       last ? h('p', { class: 'xage' }, h('span', { class: 'xage__n' }, String(ageAt(e, last.when))), h('span', { class: 'small' }, 'in their latest dated scene, ', cardBtn(last))) : h('p', { class: 'muted small' }, 'Set “When in the story” on their scenes to see ages.'),
       rows.length > 1 || (rows[0] && rows[0][1] !== rows[0][2]) ? h('ul', { class: 'xage__list' }, rows.map(([t, a, z]) => h('li', {}, h('span', {}, t), h('strong', {}, a === z ? String(a) : `${a} → ${z}`)))) : null);
   }
+  const g = e.bg;
+  const bgText = g.story || g.origin || g.upbringing;
+  out.push(h('h2', { class: 'aside__title' }, 'Background'),
+    bgText ? h('p', { class: 'small bg__peek' }, bgText.length > 220 ? bgText.slice(0, 220).replace(/\s+\S*$/, '') + '…' : bgText) : h('p', { class: 'muted small' }, 'No backstory yet.'),
+    h('button', { class: 'linkbtn small', type: 'button', onclick: () => { S.entityView = 'bg'; render(); window.scrollTo(0, 0); } }, bgText ? `Read more${g.events.length ? ` · ${g.events.length} key moment${g.events.length === 1 ? '' : 's'}` : ''}` : 'Write their background'));
   const know = knowsAtEnd(e.id);
   if (know.length) {
     out.push(h('h2', { class: 'aside__title' }, 'What they know'), h('ul', { class: 'xknow' }, know.map(({ s, st }) =>
@@ -115,6 +121,50 @@ export function asideExtras(p, e) {
 // ======================================================================
 // Voice sheet
 // ======================================================================
+
+// ======================================================================
+// Background: where a character comes from, before page one
+// ======================================================================
+
+function backgroundView(p, e, upd) {
+  const g = e.bg;
+  const ta = (key, label, ph, rows = 2, cls = '') => h('label', { class: 'field' }, h('span', { class: 'field__label' }, label),
+    autosize(h('textarea', { class: 'input ' + cls, rows, value: g[key], placeholder: ph, oninput: (ev) => upd((x) => { x.bg[key] = ev.target.value; }) })));
+  const cardOpts = (sel) => (isSeries() ? S.project.books : [P()]).flatMap((b) => b.columns.map((c, i) => {
+    const cs = b.cards.filter((k) => k.colId === c.id);
+    return cs.length ? h('optgroup', { label: `${isSeries() ? b.title + ' · ' : ''}${c.interlude ? 'Interlude' : b.labels.column} ${numeral(b, i)}${c.title ? ': ' + c.title : ''}` },
+      cs.map((k) => h('option', { value: k.id, selected: k.id === sel }, k.title || 'Untitled scene'))) : null;
+  }));
+  const findK = (id) => readingSeq().map((x) => x.k).find((k) => k.id === id);
+  const born = e.born ? `Born ${P().calendar.years[e.born.y] || (e.born.y < 0 ? `${-e.born.y} years before ${P().calendar.years[0]}` : `year ${e.born.y + 1}`)}` : null;
+  return h('div', { class: 'xone bg' },
+    panel('', h('h2', { class: 'xpanel__t' }, 'Backstory'),
+      h('p', { class: 'muted small' }, `Everything that happened to ${e.name || 'them'} before the story starts. Write as much as you like; readers may never see most of it.`),
+      autosize(h('textarea', { class: 'input bg__story', rows: 8, value: g.story, placeholder: 'Born in the drowned quarter of Saltmarsh, the youngest of five…', 'aria-label': 'Backstory', oninput: (ev) => upd((x) => { x.bg.story = ev.target.value; }) }))),
+    panel('bg__grid',
+      ta('origin', 'Where they come from', 'Place, people, class, faith'),
+      ta('upbringing', 'Upbringing and family life', 'Who raised them, what home was like'),
+      ta('work', 'Training, work and skills', 'Apprenticed to a grafter at twelve…'),
+      ta('before', 'When the story begins', 'Where they are and what they’re doing on page one'),
+      h('div', { class: 'bg__wide' }, ta('hidden', 'What they’d never tell anyone', 'The thing in their past they hide, even from the reader (for now)', 2),
+        h('span', { class: 'muted small' }, 'Want to track which of these readers learn, and when? Use the ', h('button', { class: 'linkbtn', type: 'button', onclick: () => { S.entityView = 'iceberg'; render(); } }, 'Iceberg tab'), '.'))),
+    panel('', h('h2', { class: 'xpanel__t' }, 'Key moments in their past'),
+      h('p', { class: 'muted small' }, [born, 'Oldest first. Link a moment to the scene where it’s told, such as a flashback.'].filter(Boolean).join(' · ')),
+      g.events.length ? h('ol', { class: 'bg__events' }, g.events.map((ev, i) => {
+        const k = ev.cardId && findK(ev.cardId);
+        return h('li', { class: 'bg__ev' },
+          h('input', { class: 'input input--sm bg__when', value: ev.when, placeholder: 'Age 9', 'aria-label': 'When', oninput: (x) => upd(() => { ev.when = x.target.value; }) }),
+          h('div', { class: 'bg__what' },
+            h('input', { class: 'input input--sm', value: ev.what, placeholder: 'What happened', 'aria-label': 'What happened', oninput: (x) => upd(() => { ev.what = x.target.value; }) }),
+            h('span', { class: 'xrow small' }, k ? ['Told in ', cardBtn(k, `${k.title || 'Untitled scene'}`)] : h('span', { class: 'muted' }, 'Not told on the page yet'),
+              h('select', { class: 'input input--sm', 'aria-label': 'Scene where it’s told', onchange: (x) => change(() => { ev.cardId = x.target.value || null; }) },
+                h('option', { value: '' }, k ? 'Not told on the page' : 'Told in a scene…'), cardOpts(ev.cardId)))),
+          h('span', { class: 'bg__btns' },
+            h('button', { class: 'iconbtn iconbtn--sm', type: 'button', 'aria-label': 'Earlier', disabled: i === 0, onclick: () => change(() => { g.events.splice(i - 1, 0, g.events.splice(i, 1)[0]); }) }, icon('up')),
+            h('button', { class: 'iconbtn iconbtn--sm', type: 'button', 'aria-label': 'Remove moment', onclick: () => change(() => { g.events.splice(i, 1); }) }, icon('x'))));
+      })) : null,
+      h('button', { class: 'btn btn--sm', type: 'button', onclick: () => change(() => { g.events.push({ id: uid(), when: '', what: '', cardId: null }); }) }, icon('plus'), ' Moment')));
+}
 
 function voiceView(e, upd) {
   const v = e.voice;
