@@ -5,6 +5,7 @@ import { uid, numeral, dayOf, REL_KINDS, SECRET_KINDS, REVEAL_HOW, FAMILY_KINDS 
 import { S, P, isSeries, inSeriesTop, change, render, go, phref, pbase, openCard, cardInfo, readingSeq, entity, typeOf, plural, gameOn, viewSheet, appearances, newEntity, scopeCards } from './app.js';
 import { charType, factionType, isChar, chars, factions, factionsOf, nameOf, units, positions, cardBtn, seg, sel, pageHead, panel, empty, chipsEditor, dismissed, dismissBtn } from './x-common.js';
 import { clipsPanel, moodBoard } from './x-world.js';
+import { icebergEditor } from './x-sanderson.js';
 export { isChar };
 
 const RK = Object.fromEntries(REL_KINDS.map(([v, l, c, d]) => [v, { l, c, d }]));
@@ -47,7 +48,7 @@ const yearLabel = (y) => { const Y = P().calendar.years; return y >= 0 && y < Y.
 
 export function entityTabs(e) {
   const tabs = [['profile', 'Profile'], isChar(e) ? ['voice', 'Voice'] : null, isChar(e) ? ['arc', 'Arc'] : null, isChar(e) ? ['family', 'Family'] : null,
-    gameOn() ? ['sheet', 'Game sheet'] : null, ['clips', `Clippings${e.clips.length ? ' ' + e.clips.length : ''}`], ['mood', `Mood board${e.mood.length ? ' ' + e.mood.length : ''}`]].filter(Boolean);
+    gameOn() ? ['sheet', 'Game sheet'] : null, ['iceberg', `Iceberg${e.facts.length ? ' ' + e.facts.length : ''}`], ['clips', `Clippings${e.clips.length ? ' ' + e.clips.length : ''}`], ['mood', `Mood board${e.mood.length ? ' ' + e.mood.length : ''}`]].filter(Boolean);
   const cur = tabs.some(([v]) => v === S.entityView) ? S.entityView : 'profile';
   return seg(tabs, cur, (v) => { S.entityView = v; render(); }, 'Entry view');
 }
@@ -59,6 +60,7 @@ export function entityExtra(p, e, profile) {
   if (v === 'arc' && isChar(e)) return arcView(e, upd);
   if (v === 'family' && isChar(e)) return familyEditor(e);
   if (v === 'sheet' && gameOn()) return viewSheet(p, e);
+  if (v === 'iceberg') return h('div', { class: 'xone xone--wide' }, icebergEditor(p, e));
   if (v === 'clips') return h('div', { class: 'xone' }, panel('', h('h2', { class: 'xpanel__t' }, 'Clippings'), h('p', { class: 'muted small' }, 'Links, notes and images for this entry.'), clipsPanel(() => e.clips, (fn) => upd((x) => fn(x.clips)))));
   if (v === 'mood') return h('div', { class: 'xone' }, moodBoard(() => e.mood, (fn) => change(() => fn(e.mood))));
   return profile();

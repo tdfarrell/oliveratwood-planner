@@ -38,7 +38,7 @@ export function units(p = P()) {
     const seq = bookSeq(b);
     b.columns.forEach((c, i) => {
       out.push({ b, c, i, num: numeral(b, i), label: `${isSeries() && inSeriesTop() ? short(b.title) + ' ' : ''}${numeral(b, i)}`,
-        long: `${isSeries() && inSeriesTop() ? b.title + ' · ' : ''}${b.labels.column} ${numeral(b, i)}${c.title ? ': ' + c.title : ''}`,
+        long: `${isSeries() && inSeriesTop() ? b.title + ' · ' : ''}${c.interlude ? 'Interlude' : b.labels.column} ${numeral(b, i)}${c.title ? ': ' + c.title : ''}`,
         cards: seq.filter((k) => k.colId === c.id) });
     });
   }

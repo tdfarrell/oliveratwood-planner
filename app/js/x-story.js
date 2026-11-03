@@ -7,6 +7,8 @@ import { units, positions, cardBtn, seg, sel, pageHead, panel, empty, dismissed,
 import { revealsBox, relsBox, arcsBox } from './x-people.js';
 import { questsBox } from './x-game.js';
 import { clipsPanel } from './x-world.js';
+import { promiseRuns, idleUnits, promiseIssues, toneBox, magicBox, connsOn, foreshadowView } from './x-sanderson.js';
+import { PROMISE_TYPES, PROMISE_SIZES } from './model.js';
 
 // ======================================================================
 // Promises: questions raised for the reader, and where they’re answered
@@ -50,13 +52,15 @@ export function viewPromises(p) {
   const inScope = Q.filter((q) => { const s = spans.get(q.id); return unitOf.has(s.rk) || unitOf.has(s.ak) || (s.r == null && s.a == null); });
   const elsewhere = Q.filter((q) => !inScope.includes(q));
   const where = (k) => (k ? `${isSeries() ? cardInfo(k).b.title + ' · ' : ''}${cardInfo(k).b.labels.column} ${cardInfo(k).num}` : null);
+  const { runs } = promiseRuns(p);
+  const issues = promiseIssues(p).filter((x) => !x.key.startsWith('ptone'));
 
-  const text = h('input', { class: 'input', placeholder: 'A question the reader will want answered', 'aria-label': 'New question' });
-  let scope = 'book';
+  const text = h('input', { class: 'input', placeholder: 'A promise: a question the reader will want answered', 'aria-label': 'New promise' });
+  let scope = 'book', ptype = '', psize = 'medium';
   const add = () => {
     const t = text.value.trim();
     if (!t) { text.focus(); return; }
-    change(() => { p.questions.push({ id: uid(), text: t, scope }); });
+    change(() => { p.questions.push({ id: uid(), text: t, scope, type: ptype, size: psize }); });
   };
   text.addEventListener('keydown', (e) => { if (e.key === 'Enter') add(); });
   const ends = endingProblems(p);
@@ -72,37 +76,44 @@ export function viewPromises(p) {
       h('div', { class: 'pq__q' },
         h('input', { class: 'pq__text', value: q.text, 'aria-label': 'Question', oninput: (e) => change(() => { q.text = e.target.value; }, { render: false }) }),
         h('div', { class: 'pq__meta' },
+          sel([['', 'Type…'], ...PROMISE_TYPES.map(([v, l]) => [v, l])], q.type || '', (v) => change(() => { q.type = v; }), 'Type', 'pq__scope pq__type' + (q.type ? ' pt-' + q.type : '')),
+          sel(PROMISE_SIZES.map(([v, l, d]) => [v, `${d} ${l}`]), q.size || 'medium', (v) => change(() => { q.size = v; }), 'Size', 'pq__scope'),
           sel(SCOPES, q.scope, (v) => change(() => { q.scope = v; }), 'Scope', 'pq__scope'),
-          h('span', { class: 'muted small' }, s.r == null ? 'Not raised yet' : `Raised in ${where(s.rk)}`, s.a == null ? (s.r == null ? '' : ' · still open') : ` · answered in ${where(s.ak)}`),
+          h('span', { class: 'muted small' }, s.r == null ? 'Not made yet' : `Made in ${where(s.rk)}`, s.a == null ? (s.r == null ? '' : ' · still open') : ` · paid off in ${where(s.ak)}`),
           h('button', { class: 'iconbtn iconbtn--sm', type: 'button', 'aria-label': 'Delete question', onclick: async () => {
             if (!(await confirmDanger('Delete this question?', 'Scenes that raise or answer it lose the tag.'))) return;
-            change(() => { p.questions = p.questions.filter((x) => x !== q); for (const { k } of allCards()) { k.raises = k.raises.filter((x) => x !== q.id); k.answers = k.answers.filter((x) => x !== q.id); } });
+            change(() => { p.questions = p.questions.filter((x) => x !== q); for (const { k } of allCards()) { k.raises = k.raises.filter((x) => x !== q.id); k.answers = k.answers.filter((x) => x !== q.id); k.moves = k.moves.filter((x) => x !== q.id); } });
           } }, icon('x')))),
-      U.map((u, i) => {
+      (() => { const run = runs.get(q.id); const idle = run ? idleUnits(run, U.length) : new Set(); return U.map((u, i) => {
         const on = startI != null && endI != null && i >= startI && i <= endI && !(ri != null && ri === ai);
-        return h('div', { class: 'pq__cell', title: i === ri ? 'Raised here' : i === ai ? 'Answered here' : '' },
+        const moved = run && run.moved.includes(i);
+        return h('div', { class: 'pq__cell' + (idle.has(i) ? ' is-idle' : ''), title: i === ri ? 'Made here' : i === ai ? 'Paid off here' : moved ? 'Progress here' : idle.has(i) ? 'Sitting idle' : '' },
           on ? h('span', { class: 'pq__bar' + (stillOpen ? ' is-open' : ''), style: { left: i === ri ? '50%' : '0', right: i === ai ? '50%' : '0' } }) : null,
+          moved && i !== ri && i !== ai ? h('span', { class: 'pq__dot pq__dot--move' }) : null,
           i === ri ? h('span', { class: 'pq__dot pq__dot--raise' }) : null,
           i === ai ? h('span', { class: 'pq__dot pq__dot--answer' }) : null);
-      }),
+      }); })(),
     ];
   };
 
   return h('div', { class: 'wrap wrap--wide x' },
-    pageHead('Promises', 'The questions you put in the reader’s head, where each is raised and where it’s answered. Tag scenes from the card’s “Questions” section.'),
-    panel('pq-add', text, sel(SCOPES, scope, (v) => { scope = v; }, 'Scope'), h('button', { class: 'btn btn--primary', type: 'button', onclick: add }, icon('plus'), ' Question')),
+    pageHead('Promises, progress, payoff', 'Each promise has a type and a size. Scenes make it, move it forward, or pay it off; the planner watches for promises that stall, and for an ending that pays off different promises than the opening made. Tag scenes from the card’s “Promises” section.'),
+    panel('pq-add', text, sel([['', 'Type…'], ...PROMISE_TYPES.map(([v, l]) => [v, l])], ptype, (v) => { ptype = v; }, 'Type'), sel(PROMISE_SIZES.map(([v, l, d]) => [v, `${d} ${l}`]), psize, (v) => { psize = v; }, 'Size'), sel(SCOPES, scope, (v) => { scope = v; }, 'Scope'), h('button', { class: 'btn btn--primary', type: 'button', onclick: add }, icon('plus'), ' Promise')),
     h('div', { class: 'xcols' },
       h('div', { class: 'xcols__main' },
         inScope.length ? panel('pq', h('div', { class: 'pq__grid', style: { gridTemplateColumns: `minmax(260px, 2.2fr) repeat(${U.length}, minmax(40px, 1fr))` } },
           h('span', { class: 'pq__h' }, 'Question'), U.map((u) => h('span', { class: 'pq__colh', title: u.long }, u.label)),
           inScope.map(row)),
         h('div', { class: 'xlegend' },
-          h('span', {}, h('i', { class: 'pq__dot pq__dot--raise' }), 'Raised'), h('span', {}, h('i', { class: 'pq__dot pq__dot--answer' }), 'Answered'),
+          h('span', {}, h('i', { class: 'pq__dot pq__dot--raise' }), 'Made'), h('span', {}, h('i', { class: 'pq__dot pq__dot--move' }), 'Progress'), h('span', {}, h('i', { class: 'pq__dot pq__dot--answer' }), 'Paid off'), h('span', {}, h('i', { class: 'pq__swatch is-idle' }), 'Sitting idle'),
           h('span', {}, h('i', { class: 'pq__swatch is-open' }), 'Open: the reader is waiting')))
           : empty('No questions yet', 'Add the questions your story makes readers ask: who sent the letter, will she get home, what is the orchard taking. Then tag the scenes that raise and answer them.'),
         elsewhere.length ? panel('', h('h2', { class: 'xpanel__t' }, 'Raised and answered in other books'),
           h('ul', { class: 'xlist' }, elsewhere.map((q) => { const s = spans.get(q.id); return h('li', {}, h('span', {}, q.text), h('span', { class: 'muted small' }, `${where(s.rk) || 'not raised'} → ${where(s.ak) || 'open'}`)); }))) : null),
-      h('aside', { class: 'xcols__side' }, panel('',
+      h('aside', { class: 'xcols__side' }, toneBox(p),
+        issues.map((x) => panel('xwarn xwarn--meh', h('span', { class: 'xwarn__k' }, x.key.startsWith('pidle') ? 'Sitting idle' : 'Too small?'), h('span', {}, x.text + '. ' + x.sub),
+          h('span', { class: 'xwarn__act' }, x.k ? cardBtn(x.k, 'Open the last scene that touched it') : null, dismissBtn(x.key)))),
+        panel('',
         h('h2', { class: 'xpanel__t' }, 'Installment endings'),
         h('p', { class: 'muted small' }, 'For a serial: does each part end with a question still open?'),
         !Q.length ? h('p', { class: 'muted small' }, 'Add questions to check this.') : ends.map(({ u, open, last }) => h('div', { class: 'pend' + (open.length ? '' : ' is-bad') },
@@ -127,8 +138,10 @@ function promisesBox(p, k, upd) {
         if (v === '__new') { const t = await ask('New question', 'The question the reader will ask', '', 'Add'); if (!t) { draw(); return; } v = uid(); change(() => { Q.push({ id: v, text: t, scope: 'book' }); }, { render: false }); }
         if (v) upd((cc) => { if (!cc[key].includes(v)) cc[key].push(v); });
         draw();
-      } }, h('option', { value: '' }, '+ Question…'), Q.filter((q) => !c[key].includes(q.id)).map((q) => h('option', { value: q.id }, q.text.slice(0, 70))), h('option', { value: '__new' }, 'New question…')));
-    append(box, [line('raises', 'Raises'), line('answers', 'Answers')]);
+      } }, h('option', { value: '' }, '+ Promise…'), Q.filter((q) => !c[key].includes(q.id)).map((q) => h('option', { value: q.id }, q.text.slice(0, 70))), h('option', { value: '__new' }, 'New promise…')));
+    append(box, [line('raises', 'Makes'), line('moves', 'Moves'), line('answers', 'Pays off'),
+      h('p', { class: 'muted small' }, '“Moves” is progress: a clue, a step closer, a setback. Promises that go a long time without any get flagged.'),
+      h('label', { class: 'check small' }, h('input', { type: 'checkbox', checked: !!c.payoff, onchange: (e) => { upd((cc) => { cc.payoff = e.target.checked; }); } }), ' This scene is a payoff for its thread (for the Avalanche)')]);
   };
   draw();
   return box;
@@ -349,9 +362,9 @@ export function openFlags(p = P()) {
 export function viewRevisions(p) {
   const view = S.revView || 'flags';
   return h('div', { class: 'wrap wrap--wide x' },
-    pageHead('Revisions', view === 'flags' ? 'Everything you meant to fix later, in reading order. Add flags from a scene card’s “Fix later” section.' : 'Your own list of read-throughs, ticked per part. Separate from scene status.',
-      seg([['flags', 'Flags'], ['passes', 'Passes']], view, (v) => { S.revView = v; render(); }, 'Revisions view')),
-    view === 'flags' ? flagsView(p) : passesView(p));
+    pageHead(view === 'foreshadow' ? 'Foreshadowing pass' : 'Revisions', view === 'flags' ? 'Everything you meant to fix later, in reading order. Add flags from a scene card’s “Fix later” section.' : view === 'foreshadow' ? 'After drafting: each payoff, the setups it has so far, and earlier scenes that share its characters or places where one could go. “Plant here” adds a foreshadowing flag to that scene.' : 'Your own list of read-throughs, ticked per part. Separate from scene status.',
+      seg([['flags', 'Flags'], ['passes', 'Passes'], ['foreshadow', 'Foreshadowing']], view, (v) => { S.revView = v; render(); }, 'Revisions view')),
+    view === 'flags' ? flagsView(p) : view === 'foreshadow' ? foreshadowView(p) : passesView(p));
 }
 
 function flagsView(p) {
@@ -485,7 +498,12 @@ export function sceneExtras(p, k, upd, dlg) {
   return h('div', { class: 'xsecs' },
     p.checklist.on ? sec('Scene checklist', 0, true, checklistBox(p, k, upd)) : null,
     sec('Fix later', c.flags.filter((f) => !f.done).length, c.flags.length > 0, flagsBox(p, k, upd)),
-    sec('Questions for the reader', c.raises.length + c.answers.length, false, promisesBox(p, k, upd)),
+    cardInfo(c).row && cardInfo(c).row.flash ? sec('In the past', 0, true, h('div', { class: 'xbox' }, h('label', { class: 'xbox__row' }, h('span', { class: 'xbox__label' }, 'When'),
+      h('input', { class: 'input input--sm xbox__grow', value: c.past || '', placeholder: '30 years before', oninput: (e) => upd((cc) => { cc.past = e.target.value; }) })))) : null,
+    sec('Promises', c.raises.length + c.moves.length + c.answers.length + (c.payoff ? 1 : 0), false, promisesBox(p, k, upd)),
+    sec('Magic', c.magic.length + c.explains.length, false, magicBox(p, k, upd)),
+    connsOn(c).length ? sec('Connections', connsOn(c).length, false, h('div', { class: 'xbox' }, connsOn(c).map((x) => h('div', { class: 'xbox__row' }, h('strong', {}, x.name || 'Unnamed'), h('span', { class: 'muted small' }, x.notes || ''))),
+      h('a', { class: 'small', href: phref('conns') }, 'Edit in World › Connections'))) : null,
     sec('Secrets revealed', c.reveals.length, false, revealsBox(p, k, upd)),
     sec('Relationships change here', c.rels.length, false, relsBox(p, k, upd)),
     chars().some((e) => c.entityIds.includes(e.id)) ? sec('Character arcs', c.arcs.length, false, arcsBox(p, k, upd)) : null,
@@ -497,6 +515,8 @@ export function cardExtras(p, k) {
   const open = k.flags.filter((f) => !f.done).length;
   const chk = p.checklist && p.checklist.on && k.chk;
   return [
+    k.past ? h('span', { class: 'card__past' }, k.past) : null,
+    k.magic.length ? h('span', { class: 'card__magic', title: 'Magic used here' }, '✦ ', k.magic.some((u) => u.solves) ? 'Magic solves' : 'Magic') : null,
     open ? h('span', { class: 'card__fix', title: k.flags.filter((f) => !f.done).map((f) => f.text).join('\n') }, icon('flag'), `${open} to fix`) : null,
     chk && nothingChanges(k) ? h('span', { class: 'card__chk is-flat' }, 'Nothing changes?') : chk && k.chk.from && k.chk.to ? h('span', { class: 'card__chk' }, `${k.chk.from} → ${k.chk.to}`) : null,
   ];

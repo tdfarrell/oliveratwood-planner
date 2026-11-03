@@ -62,6 +62,8 @@ export class ServerStore {
   fileUrl(name) { return /^[a-f0-9]{20}\.(png|jpg|gif|webp)$/.test(name || '') ? `${this.base}?action=file&n=${name}` : ''; }
   async ideas() { return this.req('ideas'); }
   async saveIdeas(ideas, rev) { return (await this.req('ideas', { method: 'POST', body: { ideas, rev: rev || null } })).rev; }
+  async links() { return this.req('links'); }
+  async saveLinks(links, rev) { return (await this.req('links', { method: 'POST', body: { links, rev: rev || null } })).rev; }
 }
 
 export class LocalStore {
@@ -103,6 +105,8 @@ export class LocalStore {
   fileUrl(name) { return /^data:image\/(png|jpeg|gif|webp);base64,/.test(name || '') ? name : ''; }
   async ideas() { try { return JSON.parse(localStorage.getItem(this.key + 'ideas')) || { ideas: [], rev: null }; } catch { return { ideas: [], rev: null }; } }
   async saveIdeas(ideas) { const rev = Math.random().toString(36).slice(2); localStorage.setItem(this.key + 'ideas', JSON.stringify({ ideas, rev })); return rev; }
+  async links() { try { return JSON.parse(localStorage.getItem(this.key + 'links')) || { links: [], rev: null }; } catch { return { links: [], rev: null }; } }
+  async saveLinks(links) { const rev = Math.random().toString(36).slice(2); localStorage.setItem(this.key + 'links', JSON.stringify({ links, rev })); return rev; }
 }
 
 // ---------- Unsaved-changes safety net (per device) ----------

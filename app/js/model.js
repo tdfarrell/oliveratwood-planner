@@ -55,8 +55,18 @@ export function roman(n) {
   return out;
 }
 
+// Interludes sit between parts and don't take a number of their own: the
+// second interlude after Part II is "II·2", and Part III is still III.
 export function numeral(project, index) {
-  return project.labels.numerals === 'arabic' ? String(index + 1) : roman(index + 1);
+  const cols = project.columns || [];
+  const fmt = (n) => (project.labels.numerals === 'arabic' ? String(n) : roman(n));
+  if (!cols.some((c) => c && c.interlude)) return fmt(index + 1);
+  let n = 0, sub = 0;
+  for (let i = 0; i <= index && i < cols.length; i++) {
+    if (cols[i] && cols[i].interlude) sub++; else { n++; sub = 0; }
+  }
+  if (index >= cols.length) n += index - cols.length + 1;
+  return cols[index] && cols[index].interlude ? `${n ? fmt(n) : '0'}·${sub}` : fmt(n);
 }
 
 const f = (name, type, extra = {}) => ({ id: uid(), name, type, ...extra });
@@ -226,7 +236,8 @@ export function normalize(p) {
     c.when = c.when && Number.isInteger(c.when.y) ? c.when : null;
     c.game = Array.isArray(c.game) ? c.game : [];
     c.beatId = c.beatId || null;
-    for (const k of ['reveals', 'rels', 'raises', 'answers', 'flags', 'arcs', 'clips', 'quests']) c[k] = Array.isArray(c[k]) ? c[k] : [];
+    for (const k of ['reveals', 'rels', 'raises', 'answers', 'flags', 'arcs', 'clips', 'quests', 'moves', 'magic', 'explains']) c[k] = Array.isArray(c[k]) ? c[k] : [];
+    c.payoff = !!c.payoff; c.past = c.past || '';
     c.chk = c.chk && typeof c.chk === 'object' ? c.chk : {};
   }
   for (const e of p.entities) normalizeEntity(e);
@@ -283,9 +294,9 @@ export const LINK_KINDS = [
   ['retold', 'Retold or remembered'],
 ];
 
-export const WORLD_KEYS = ['types', 'entities', 'nameBank', 'game', 'secrets', 'rels', 'maps', 'questions', 'travel', 'webPos', 'dismissed', 'calendar'];
+export const WORLD_KEYS = ['types', 'entities', 'nameBank', 'game', 'secrets', 'rels', 'maps', 'questions', 'travel', 'webPos', 'dismissed', 'calendar', 'magic', 'conns'];
 const BOOK_KEYS = ['title', 'synopsis', 'storySlug', 'labels', 'columns', 'rows', 'cards', 'cardFields', 'acts', 'notes', 'created', 'flow', 'wordGoal',
-  'branches', 'passes', 'checklist', 'braid', 'mood', 'clips'];
+  'branches', 'passes', 'checklist', 'braid', 'mood', 'clips', 'bookKind', 'arch', 'ending', 'aval'];
 
 export function newSeries(title) {
   return {
@@ -634,9 +645,30 @@ export const DEFAULT_PASSES = [['Story pass', 'Does each scene earn its place?']
 
 const arr = (v) => (Array.isArray(v) ? v : []);
 
+// Sanderson-style tools
+export const MAGIC_PARTS = ['powers', 'costs', 'limits', 'weak', 'rules'];
+export const BOOK_KINDS = [['main', 'Main series'], ['standalone', 'Standalone'], ['novella', 'Novella'], ['short', 'Short story']];
+export const PROMISE_TYPES = [['mystery', 'Mystery', '#1F4F86', '#E6EEF8'], ['character', 'Character', '#245E39', '#E3F1E7'], ['romance', 'Romance', '#A8344E', '#FBE8EC'],
+  ['quest', 'Quest', '#8A3410', '#F4E1D6'], ['heist', 'Heist', '#4E3A72', '#EEE8F6'], ['survival', 'Survival', '#6E400B', '#F6EBD9'], ['other', 'Other', '#46525A', '#E9EDEE']];
+export const PROMISE_SIZES = [['big', 'Big', '●●●'], ['medium', 'Medium', '●●'], ['small', 'Small', '●']];
+export const CONN_KINDS = [['cameo', 'Cameo'], ['artifact', 'Shared item'], ['phrase', 'Phrase'], ['hopper', 'World-hopper'], ['place', 'Shared place'], ['event', 'Same event'], ['other', 'Other']];
+export const VISIBILITY = [['invisible', 'Invisible', 'only you know', '#46525A', '#E3E8EA'], ['fans', 'Noticed by fans', 'findable on a reread', '#6E400B', '#F6EBD9'], ['explicit', 'Explicit', 'any reader sees it', '#245E39', '#E3F1E7']];
+export const ARCHETYPES = {
+  mystery: ['Mystery', ['A question nobody can answer', 'Clues the reader can follow', 'A red herring or false answer', 'The real answer reframes the clues', 'The detective pays a cost']],
+  heist: ['Heist', ['The target, and why it’s impossible', 'Recruit the team', 'Explain the plan', 'The plan goes wrong', 'The twist: the real plan', 'The getaway']],
+  quest: ['Quest / travelogue', ['The goal and the road', 'Leave home', 'Wonders and dangers along the way', 'A guide or map is lost', 'Arrive, changed']],
+  relationship: ['Relationship', ['Meet', 'Want each other, can’t', 'Forced together', 'Break apart', 'Choose each other']],
+  revenge: ['Revenge', ['The wrong done', 'The vow', 'Becoming able', 'Closing in', 'The cost of revenge', 'Confrontation']],
+  survival: ['Survival', ['The threat arrives', 'Losing what kept them safe', 'Learning to survive', 'A safe place that isn’t', 'The last stand']],
+  growth: ['Character growth', ['The flaw, shown', 'A chance to change, refused', 'Pushed to change', 'Backslide', 'The changed choice']],
+  own: ['My own', []],
+};
+
 // The world: shared by every book of a series, or a standalone project's own.
 export function normalizeWorld(w) {
-  for (const k of ['secrets', 'rels', 'maps', 'questions', 'dismissed']) w[k] = arr(w[k]);
+  for (const k of ['secrets', 'rels', 'maps', 'questions', 'dismissed', 'magic', 'conns']) w[k] = arr(w[k]);
+  for (const m of w.magic) for (const k of MAGIC_PARTS) m[k] = arr(m[k]);
+  for (const q of w.questions) { q.type = q.type || ''; q.size = q.size || 'medium'; }
   w.webPos = w.webPos && typeof w.webPos === 'object' ? w.webPos : {};
   const t = w.travel && typeof w.travel === 'object' ? w.travel : {};
   w.travel = { unit: t.unit || 'mi', speeds: Object.assign({ foot: 20, horse: 40, boat: 60 }, t.speeds), routes: arr(t.routes) };
@@ -657,13 +689,23 @@ export function normalizeBook(b) {
   b.checklist = Object.assign({ on: false, labels: { goal: 'Goal', conflict: 'Conflict', outcome: 'Outcome', change: 'What changes' } }, b.checklist);
   b.braid = Object.assign({ run: 3, gap: 6 }, b.braid);
   b.mood = arr(b.mood); b.clips = arr(b.clips);
-  for (const c of b.columns || []) c.passes = c.passes && typeof c.passes === 'object' ? c.passes : {};
+  b.bookKind = BOOK_KINDS.some(([v]) => v === b.bookKind) ? b.bookKind : 'main';
+  b.arch = b.arch && typeof b.arch === 'object' && !Array.isArray(b.arch) ? b.arch : {};
+  b.ending = arr(b.ending);
+  for (const x of b.ending) x.needs = arr(x.needs);
+  b.aval = Object.assign({ window: 'last' }, b.aval);
+  for (const c of b.columns || []) {
+    c.passes = c.passes && typeof c.passes === 'object' ? c.passes : {};
+    c.interlude = !!c.interlude;
+    c.epi = Object.assign({ text: '', src: '', where: '', reveals: [], clue: false }, c.epi);
+  }
+  for (const r of b.rows || []) { r.flash = !!r.flash; r.focus = r.focus || null; }
   return b;
 }
 
 export function normalizeEntity(e) {
   e.fields = e.fields || {}; e.summary = e.summary || ''; e.notes = e.notes || '';
-  for (const k of ['aliases', 'wrong', 'family', 'mood', 'clips']) e[k] = arr(e[k]);
+  for (const k of ['aliases', 'wrong', 'family', 'mood', 'clips', 'sliders', 'facts']) e[k] = arr(e[k]);
   e.voice = Object.assign({ talk: '', dialect: '', loves: [], never: [], lines: [] }, e.voice);
   e.arc = Object.assign({ type: '', want: '', need: '', wound: '', lie: '', truth: '' }, e.arc);
   e.born = e.born && Number.isInteger(e.born.y) ? e.born : null;

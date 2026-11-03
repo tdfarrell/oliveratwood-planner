@@ -327,6 +327,21 @@ switch ($action) {
         write_atomic($file, $json);
         out(['rev' => rev_of($json)]);
 
+    case 'links':
+        // Connections between series: one list per person, like the idea inbox.
+        $file = "$DATA/links.php";
+        $current = read_guarded($file);
+        if ($method === 'GET') {
+            $d = $current === null ? ['links' => []] : (json_decode($current, true) ?: ['links' => []]);
+            out(['links' => $d['links'] ?? [], 'rev' => $current === null ? null : rev_of($current)]);
+        }
+        $b = body_json();
+        if (!isset($b['links']) || !is_array($b['links'])) fail('Bad request.', 400);
+        if (($b['rev'] ?? null) !== ($current === null ? null : rev_of($current))) fail('Connections changed on another device.', 409, 'conflict');
+        $json = json_encode(['links' => $b['links']], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+        write_atomic($file, $json);
+        out(['rev' => rev_of($json)]);
+
     case 'deleted':
         // Projects that only exist as backups (deleted), so they can be brought back.
         $out = [];

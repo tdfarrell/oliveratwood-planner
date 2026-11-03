@@ -6,6 +6,7 @@ import { chars, units, positions, cardBtn, sel, pageHead, panel, dismissed, dism
 import { endingProblems, braidIssues, nothingChanges } from './x-story.js';
 import { secretProblems, nameIssues } from './x-people.js';
 import { travelIssues } from './x-world.js';
+import { sandersonChecks } from './x-sanderson.js';
 
 const where = (k) => `${isSeries() ? cardInfo(k).b.title + ' · ' : ''}${cardInfo(k).b.labels.column} ${cardInfo(k).num}`;
 
@@ -81,6 +82,7 @@ function collect(p) {
     const missing = (b.passes || []).filter((x) => x.required && !c.passes[x.id]);
     if (missing.length) { const key = `pass:${c.id}`; if (!dismissed(key)) out.push({ group: 'Revisions', sev: 'meh', key, text: `Published without: ${missing.map((x) => x.name).join(', ')}`, sub: label, href: phref('revisions') }); }
   })));
+  sandersonChecks(p, (x) => { if (!dismissed(x.key)) out.push(x); });
   return out;
 }
 

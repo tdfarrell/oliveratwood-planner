@@ -1,6 +1,6 @@
 import { h, append, clear, icon, openDialog, choose, confirmDanger, ask, toast, autosize } from './dom.js';
 import { TEMPLATES, PALETTE, FIELD_TYPES, STATUSES, STATUS_SHORT, uid, slugify, numeral, roman, normalize, valueText, actsOn, syncActs,
-  prepare, newSeries, newBook, importProject, findDuplicates, mergeEntities, LINE_COLORS, LINK_KINDS,
+  prepare, newSeries, newBook, importProject, findDuplicates, mergeEntities, LINE_COLORS, LINK_KINDS, BOOK_KINDS,
   GAME_EVENTS, blankSheet, applyEvent, describeEvent, cloneSheet, STRUCTURES, makeBeats, WORLD_KEYS } from './model.js';
 import { viewPromises, viewWhatifs, viewBraid, viewRevisions, sceneExtras, cardExtras, publishCheck, branchBanner } from './x-story.js';
 import { viewChars, viewWeb, viewArcs, viewFamily, viewNames, viewSecrets, entityTabs, entityExtra, ageLine, isChar, profileExtras, asideExtras, agesText } from './x-people.js';
@@ -8,6 +8,7 @@ import { viewMaps, viewCalendar, viewTravel, viewFactions, viewMood, calendarRow
 import { viewItems, viewLoot, viewQuests, viewSysMsg } from './x-game.js';
 import { viewChecks, viewPresence, checksCount } from './x-checks.js';
 import { ideasButton, viewIdeasPage, openIdeas, loadIdeas } from './x-ideas.js';
+import { viewArchetypes, viewMagic, viewSliders, viewEnding, viewAvalanche, viewEpigraphs, viewConns, viewCrossovers, viewIceberg } from './x-sanderson.js';
 import { charType } from './x-common.js';
 import { ServerStore, LocalStore, unsaved } from './store.js';
 import { KINDS, FLAVORS, kindForType, generate } from './names.js';
@@ -91,7 +92,7 @@ const typeOf = (e) => e && P().types.find((t) => t.id === e.typeId);
 const colIndex = (id) => P().columns.findIndex((c) => c.id === id);
 const lower = (s) => (s.length > 1 && s === s.toUpperCase() ? s : s.charAt(0).toLowerCase() + s.slice(1));
 const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
-const colName = (p, c) => `${p.labels.column} ${numeral(p, colIndex(c.id))}`;
+const colName = (p, c) => `${c.interlude ? 'Interlude' : p.labels.column} ${numeral(p, colIndex(c.id))}`;
 
 function cardLabel(p, k) {
   const { b, num } = cardInfo(k);
@@ -235,6 +236,7 @@ function parseRoute() {
     return { view: 'project', kind: 's', slug: parts[1], book: null, tab: parts[2] || 'timeline', id: parts[3] || null };
   }
   if (parts[0] === 'ideas') return { view: 'ideas' };
+  if (parts[0] === 'connections') return { view: 'connections' };
   return { view: 'home' };
 }
 const go = (path) => { location.hash = '#/' + path; };
@@ -256,6 +258,7 @@ async function route() {
   document.querySelectorAll('dialog[open]').forEach((d) => d.close());
   S.route = parseRoute();
   if (S.route.view === 'ideas') return viewIdeasPage();
+  if (S.route.view === 'connections') { await saveNow(); S.slug = null; S.project = null; return viewCrossovers(root); }
   if (S.route.view === 'home') {
     await saveNow();
     S.slug = null; S.project = null;
@@ -425,7 +428,8 @@ async function renderHome() {
 
   const restore = h('div', { class: 'home__foot' });
   const page = h('div', { class: 'page' },
-    h('header', { class: 'top top--home' }, brand(), h('span', { class: 'spacer' }), ideasButton(),
+    h('header', { class: 'top top--home' }, brand(), h('span', { class: 'spacer' }),
+      h('a', { class: 'btn btn--sm', href: href('connections'), title: 'Easter eggs and crossovers between your series' }, icon('link'), h('span', { class: 'ideas-btn__t' }, 'Connections')), ideasButton(),
       DEMO ? h('span', { class: 'pill' }, 'Demo: saves in this browser only') : null,
       S.user && !DEMO ? h('span', { class: 'muted small' }, S.user) : null,
       DEMO ? null : h('button', { class: 'btn btn--ghost btn--sm', type: 'button', onclick: async () => { await store.logout(); S.project = null; S.slug = null; renderLogin(); } }, icon('out'), ' Sign out')),
@@ -495,13 +499,13 @@ function restoreDeletedDialog(list) {
 // The tabs, grouped. Each group is [id, label, icon, [[tab, label], …]].
 function navGroups(top, series) {
   const story = top ? [['notes', 'Notes'], ['flow', 'Series arc'], ['promises', 'Promises']]
-    : [['notes', 'Notes'], ['flow', 'Beats & shape'], ['promises', 'Promises'], ['whatif', 'What-ifs']];
+    : [['notes', 'Notes'], ['flow', 'Beats & shape'], ['ending', 'Ending first'], ['promises', 'Promises'], ['arch', 'Archetypes'], ['avalanche', 'Avalanche'], ['epigraphs', 'Epigraphs'], ['whatif', 'What-ifs']];
   return [
     top ? ['timeline', 'Timeline', 'timeline', [['timeline', 'Timeline']]] : null,
     ['story', 'Story', 'flow', story],
     top ? ['books', 'Books', 'book', [['books', 'Books']]] : ['grid', 'Grid', 'grid', [['grid', 'Grid'], ['braid', 'Braid']]],
-    ['chars', 'Characters', 'user', [['chars', 'All'], ['web', 'Relationships'], ['arcs', 'Arcs'], ['family', 'Family trees']]],
-    ['world', 'World', 'globe', [['world', 'Entries'], ['factions', 'Factions'], ['maps', 'Maps'], ['calendar', 'Calendar'], ['travel', 'Travel'], ['names', 'Names']]],
+    ['chars', 'Characters', 'user', [['chars', 'All'], ['web', 'Relationships'], ['arcs', 'Arcs'], ['sliders', 'Sliders'], ['family', 'Family trees']]],
+    ['world', 'World', 'globe', [['world', 'Entries'], ['magic', 'Magic'], ['factions', 'Factions'], ['maps', 'Maps'], ['calendar', 'Calendar'], ['travel', 'Travel'], ['names', 'Names'], ['iceberg', 'Iceberg'], series ? ['conns', 'Connections'] : null].filter(Boolean)],
     gameOn() ? ['game', 'Game', 'spark', [['progress', 'Sheets & progression'], ['items', 'Items'], ['loot', 'Loot'], ['quests', 'Quests'], ['sysmsg', 'System messages']]] : null,
     ['checks', 'Checks', 'alert', [['checks', 'Overview'], ['continuity', 'Continuity'], ['secrets', 'Secrets'], ['presence', 'Presence'], ['revisions', 'Revisions']]],
     ['book', top ? 'Series' : series ? 'Book' : 'Project', 'gear', [[top ? 'settings' : 'project', 'Settings'], ['mood', 'Mood board']]],
@@ -529,7 +533,9 @@ function render() {
     notes: () => (top ? viewSeriesArc(series) : viewFlow(p)), flow: () => (top ? viewSeriesArc(series) : viewFlow(p)),
     promises: () => viewPromises(p), whatif: () => (id ? [branchBanner(p), viewGrid(p)] : viewWhatifs(p)),
     grid: () => viewGrid(p), braid: () => viewBraid(p),
-    chars: () => viewChars(p), web: () => viewWeb(p), arcs: () => viewArcs(p), family: () => viewFamily(p),
+    chars: () => viewChars(p), web: () => viewWeb(p), arcs: () => viewArcs(p), family: () => viewFamily(p), sliders: () => viewSliders(p),
+    arch: () => viewArchetypes(p), ending: () => viewEnding(p), avalanche: () => viewAvalanche(p), epigraphs: () => viewEpigraphs(p),
+    magic: () => viewMagic(p, id), iceberg: () => viewIceberg(p, id), conns: () => (series ? viewConns(p) : viewWorld(p)),
     e: () => viewEntity(p, id), world: () => viewWorld(p, id), factions: () => viewFactions(p), maps: () => viewMaps(p, id),
     calendar: () => viewCalendar(p), travel: () => viewTravel(p), names: () => viewNames(p),
     progress: () => viewProgression(p), items: () => viewItems(p), loot: () => viewLoot(p), quests: () => viewQuests(p), sysmsg: () => viewSysMsg(p),
@@ -749,7 +755,9 @@ function viewGrid(p) {
     ] : null,
     actsOn(p) ? h('button', { class: 'btn btn--sm', type: 'button', onclick: addAct }, icon('plus'), ` ${p.labels.act}`) : null,
     h('button', { class: 'btn btn--sm', type: 'button', onclick: () => addColumn() }, icon('plus'), ` ${p.labels.column}`),
-    h('button', { class: 'btn btn--sm', type: 'button', onclick: addRow }, icon('plus'), ` ${p.labels.row}`));
+    h('button', { class: 'btn btn--sm', type: 'button', title: 'A short side chapter between parts, often from another point of view', onclick: () => addColumn(undefined, true) }, icon('plus'), ' Interlude'),
+    h('button', { class: 'btn btn--sm', type: 'button', onclick: addRow }, icon('plus'), ` ${p.labels.row}`),
+    p.rows.some((r) => r.flash) ? null : h('button', { class: 'btn btn--sm', type: 'button', title: 'A lane for one character’s past, told in flashbacks', onclick: addFlashLane }, icon('plus'), ' Flashback lane'));
 
   const useActs = actsOn(p);
   // A slot is one grid column: a real column, or the placeholder of an empty act.
@@ -757,6 +765,7 @@ function viewGrid(p) {
     ? p.acts.flatMap((a) => { const cs = p.columns.filter((c) => c.actId === a.id); return cs.length ? cs.map((c) => ({ c })) : [{ act: a }]; })
     : p.columns.map((c) => ({ c }));
   const grid = h('div', { class: 'grid' + (S.compact ? ' is-compact' : '') + (useActs ? ' has-acts' : ''), style: { '--cols': slots.length } });
+  if (slots.some((sl) => sl.c && sl.c.interlude)) grid.style.gridTemplateColumns = `var(--rowhead) ${slots.map((sl) => (sl.c && sl.c.interlude ? 'var(--intw)' : 'var(--colw)')).join(' ')} var(--addw)`;
   if (useActs) {
     grid.append(h('div', { class: 'grid__actcorner' }));
     p.acts.forEach((a, i) => grid.append(actHeader(p, a, i)));
@@ -784,13 +793,15 @@ function viewGrid(p) {
 
 function colHeader(p, c, i) {
   const n = p.cards.filter((k) => k.colId === c.id).length;
-  const el = h('div', { class: 'colhead' + (c.canon ? ' is-canon' : ''), role: 'button', tabindex: '0', title: `Edit ${lower(p.labels.column)} (drag to move)`,
+  const el = h('div', { class: 'colhead' + (c.canon ? ' is-canon' : '') + (c.interlude ? ' colhead--interlude' : ''), role: 'button', tabindex: '0', title: `Edit ${c.interlude ? 'interlude' : lower(p.labels.column)} (drag to move)`,
     onclick: () => editColumn(c.id), onkeydown: (e) => { if (e.key === 'Enter') editColumn(c.id); } },
   icon('grip', 'grip'),
   h('span', { class: 'colhead__num' }, numeral(p, i)),
   h('span', { class: 'colhead__text' },
-    h('span', { class: 'colhead__title' + (c.title ? '' : ' muted') }, c.title || `${p.labels.column} ${numeral(p, i)}`),
+    h('span', { class: 'colhead__title' + (c.title ? '' : ' muted') }, c.title || `${c.interlude ? 'Interlude' : p.labels.column} ${numeral(p, i)}`),
     h('span', { class: 'colhead__meta' },
+      c.interlude && c.pov ? h('span', { class: 'pill pill--interlude' }, c.pov) : null,
+      c.epi && c.epi.text ? h('span', { class: 'colhead__epi', title: c.epi.text + (c.epi.src ? ` (${c.epi.src})` : '') }, '❝') : null,
       c.canon ? h('span', { class: 'pill pill--canon' }, icon('lock'), 'Published') : null,
       h('span', {}, plural(n, 'card'))),
     (() => { const w = wordsOf(p.cards.filter((k) => k.colId === c.id)); return w || c.wordGoal ? h('span', { class: wordClass(w, c.wordGoal) + ' colhead__words' }, wordText(w, c.wordGoal)) : null; })(),
@@ -920,11 +931,12 @@ function stepColumn(id, dir) {
 
 function rowHeader(p, r) {
   const n = p.cards.filter((k) => k.rowId === r.id).length;
-  const el = h('div', { class: 'rowhead', role: 'button', tabindex: '0', style: { '--c': r.color }, title: `Edit ${lower(p.labels.row)} (drag to move)`,
+  const el = h('div', { class: 'rowhead' + (r.flash ? ' rowhead--flash' : ''), role: 'button', tabindex: '0', style: { '--c': r.color }, title: `Edit ${lower(p.labels.row)} (drag to move)`,
     onclick: () => editRow(r.id), onkeydown: (e) => { if (e.key === 'Enter') editRow(r.id); } },
   icon('grip', 'grip'),
   h('span', { class: 'rowhead__text' },
     h('span', { class: 'rowhead__title' }, r.title || 'Untitled'),
+    r.flash ? h('span', { class: 'rowhead__meta' }, r.focus && entity(r.focus) ? `${entity(r.focus).name}’s past` : 'Flashbacks') : null,
     h('span', { class: 'rowhead__meta' }, plural(n, 'card')),
     (() => { const w = wordsOf(p.cards.filter((k) => k.rowId === r.id)); return w ? h('span', { class: 'words rowhead__words' }, `${fmtN(w)} words`) : null; })()));
   dragSource(el, 'row', r.id);
@@ -934,7 +946,7 @@ function rowHeader(p, r) {
 
 function cell(p, c, r) {
   const cards = p.cards.filter((k) => k.colId === c.id && k.rowId === r.id);
-  const el = h('div', { class: 'cell' + (c.canon ? ' is-canon' : ''), dataset: { col: c.id, row: r.id } },
+  const el = h('div', { class: 'cell' + (c.canon ? ' is-canon' : '') + (c.interlude ? ' cell--interlude' : '') + (r.flash ? ' cell--flash' : ''), dataset: { col: c.id, row: r.id } },
     cards.map((k) => cardEl(p, k, r)),
     h('button', { class: 'cell__add', type: 'button', 'aria-label': `Add card to ${colName(p, c)}, ${r.title}`, onclick: () => newCard(c.id, r.id) }, icon('plus')));
 
@@ -1032,11 +1044,11 @@ function moveCard(id, colId, rowId, beforeId) {
   });
 }
 
-function addColumn(actId) {
+function addColumn(actId, interlude = false) {
   const p = P();
   const act = actsOn(p) ? (actId || p.acts[p.acts.length - 1].id) : undefined;
   change((p) => {
-    p.columns.push({ id: uid(), actId: act, title: '', teaser: '', recap: '', notes: '', date: '', canon: false });
+    p.columns.push({ id: uid(), actId: act, title: '', teaser: '', recap: '', notes: '', date: '', canon: false, interlude, pov: '', seeds: '', passes: {}, epi: { text: '', src: '', where: '', reveals: [], clue: false } });
     syncActs(p);
   });
   if (!actId) requestAnimationFrame(() => { const s = document.querySelector('.grid-scroll'); if (s) s.scrollLeft = s.scrollWidth; });
@@ -1088,6 +1100,14 @@ function editAct(id) {
     ],
     onClose: () => render(),
   });
+}
+
+async function addFlashLane() {
+  const p = P();
+  const cs = p.entities.filter(isChar).sort((a, b) => (a.name || '').localeCompare(b.name || ''));
+  const id = uid();
+  change((p) => p.rows.push({ id, title: 'Flashbacks', color: '#9A5B12', flash: true, focus: cs[0] ? cs[0].id : null }));
+  editRow(id);
 }
 
 async function addRow() {
@@ -1203,7 +1223,7 @@ function cardOptions(p, value, selfId) {
   const books = isSeries() ? [p, ...S.project.books.filter((b) => b !== p)] : [p];
   return books.flatMap((b) => b.columns.map((c, i) => {
     const cards = b.cards.filter((x) => x.colId === c.id && x.id !== selfId);
-    const label = `${otherBook(b) ? b.title + ' · ' : ''}${b.labels.column} ${numeral(b, i)}${c.title ? ': ' + c.title : ''}`;
+    const label = `${otherBook(b) ? b.title + ' · ' : ''}${c.interlude ? 'Interlude' : b.labels.column} ${numeral(b, i)}${c.title ? ': ' + c.title : ''}`;
     return cards.length ? h('optgroup', { label },
       cards.map((x) => h('option', { value: x.id, selected: x.id === value }, x.title || 'Untitled scene'))) : null;
   }));
@@ -1308,9 +1328,16 @@ function editColumn(id) {
       actsOn(p) ? h('label', { class: 'field' }, h('span', { class: 'field__label' }, p.labels.act),
         h('select', { class: 'input', onchange: (e) => change((p) => { c().actId = e.target.value; syncActs(p); }, { render: false }) },
           p.acts.map((a, ai) => h('option', { value: a.id, selected: a.id === c().actId }, `${p.labels.act} ${roman(ai + 1)}${a.title ? ': ' + a.title : ''}`)))) : null,
+      h('div', { class: 'row2' },
+        h('label', { class: 'check check--box' }, h('input', { type: 'checkbox', checked: !!c().interlude, onchange: (e) => upd((c) => { c.interlude = e.target.checked; }) }),
+          h('span', {}, h('strong', {}, 'Interlude'), h('br'), h('span', { class: 'muted small' }, 'A side chapter between parts; doesn’t take a number'))),
+        text('Interlude point of view', 'pov', 'Whose eyes: the ferryman, Old Pell…')),
+      text('Sets up', 'seeds', 'What this interlude plants for later'),
       text('One-line teaser', 'teaser', 'Shown on the home page and in link previews'),
       text('Previously…', 'recap', 'A short recap for returning readers', true),
       text('Planning notes', 'notes', 'Goals for this part, the cliffhanger, what must be true by the end', true),
+      h('label', { class: 'field' }, h('span', { class: 'field__label' }, 'Epigraph'), h('span', { class: 'field__hint' }, 'An in-world document at the head of this part. Sources and reveals are in Story › Epigraphs.'),
+        autosize(h('textarea', { class: 'input epi__text', rows: 2, value: c().epi ? c().epi.text : '', placeholder: '“The trees do not keep what we give them…”', oninput: (e) => upd((c) => { c.epi = c.epi || { text: '', src: '', where: '', reveals: [], clue: false }; c.epi.text = e.target.value; }) }))),
       goalField('Word goal', () => c().wordGoal, (v) => upd((c) => { c.wordGoal = v; }), `So far: ${fmtN(wordsOf(p.cards.filter((k) => k.colId === id)))} words`),
       h('div', { class: 'row2' },
         h('label', { class: 'field' }, h('span', { class: 'field__label' }, 'Publish date'),
@@ -1354,6 +1381,12 @@ function editRow(id) {
       h('label', { class: 'field' }, h('span', { class: 'field__label' }, 'Name'),
         h('input', { class: 'input', value: r().title, oninput: (e) => change(() => { r().title = e.target.value; }, { render: false }) })),
       h('div', { class: 'field' }, h('span', { class: 'field__label' }, 'Color'), sw),
+      h('label', { class: 'check check--box' }, h('input', { type: 'checkbox', checked: !!r().flash, onchange: (e) => change(() => { r().flash = e.target.checked; }, { render: false }) }),
+        h('span', {}, h('strong', {}, 'Flashback lane'), h('br'), h('span', { class: 'muted small' }, 'Scenes here are one character’s past. Give each its “when in the past” on the card.'))),
+      h('label', { class: 'field' }, h('span', { class: 'field__label' }, 'Whose past (the book’s focus character)'),
+        h('select', { class: 'input', onchange: (e) => change(() => { r().focus = e.target.value || null; }, { render: false }) },
+          h('option', { value: '' }, 'Nobody yet'),
+          p.entities.filter(isChar).sort((a, b) => (a.name || '').localeCompare(b.name || '')).map((x) => h('option', { value: x.id, selected: x.id === r().focus }, x.name || 'Unnamed')))),
     ],
     actions: [
       h('button', { class: 'btn btn--ghost btn--danger', type: 'button', onclick: async () => {
@@ -1830,7 +1863,7 @@ function colRef(colId) {
     const i = b.columns.findIndex((c) => c.id === colId);
     if (i >= 0) {
       const c = b.columns[i];
-      return { b, c, i, order: bi * 10000 + i, label: `${isSeries() ? b.title + ' · ' : ''}${b.labels.column} ${numeral(b, i)}${c.title ? ': ' + c.title : ''}` };
+      return { b, c, i, order: bi * 10000 + i, label: `${isSeries() ? b.title + ' · ' : ''}${c.interlude ? 'Interlude' : b.labels.column} ${numeral(b, i)}${c.title ? ': ' + c.title : ''}` };
     }
   }
   return null;
@@ -2120,6 +2153,8 @@ function viewBooks(series) {
           h('a', { class: 'brow__main', href: href(`s/${encodeURIComponent(S.slug)}/b/${encodeURIComponent(b.id)}`) },
             h('span', { class: 'brow__title' }, b.title || 'Untitled book'),
             h('span', { class: 'brow__meta' }, bookStats(b))),
+          h('select', { class: 'input input--sm brow__kind', 'aria-label': `Kind of book: ${b.title}`, onchange: (e) => change(() => { b.bookKind = e.target.value; }) },
+            BOOK_KINDS.map(([v, l]) => h('option', { value: v, selected: (b.bookKind || 'main') === v }, l))),
           h('span', { class: 'brow__btns' },
             h('button', { class: 'iconbtn', type: 'button', 'aria-label': 'Earlier in reading order', title: 'Earlier in reading order', disabled: i === 0,
               onclick: () => change((s) => { const [x] = s.books.splice(i, 1); s.books.splice(i - 1, 0, x); }) }, icon('up')),
