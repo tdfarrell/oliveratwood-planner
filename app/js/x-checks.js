@@ -1,6 +1,6 @@
 // Checks: everything the planner noticed, in one list, plus the presence grid.
 import { h, icon } from './dom.js';
-import { numeral } from './model.js';
+import { numeral, partLabel } from './model.js';
 import { S, P, isSeries, inSeriesTop, change, render, phref, openCard, cardInfo, plural, bookSeq, readingSeq, appearances } from './app.js';
 import { chars, units, positions, cardBtn, sel, pageHead, panel, dismissed, dismissBtn } from './x-common.js';
 import { endingProblems, braidIssues, nothingChanges } from './x-story.js';
@@ -8,7 +8,7 @@ import { secretProblems, nameIssues } from './x-people.js';
 import { travelIssues } from './x-world.js';
 import { sandersonChecks } from './x-sanderson.js';
 
-const where = (k) => `${isSeries() ? cardInfo(k).b.title + ' · ' : ''}${cardInfo(k).b.labels.column} ${cardInfo(k).num}`;
+const where = (k) => `${isSeries() ? cardInfo(k).b.title + ' · ' : ''}${cardInfo(k).part}`;
 
 // ---------- Presence ----------
 
@@ -76,7 +76,7 @@ function collect(p) {
   });
   safe(() => (inSeriesTop() ? S.project.books : [p]).forEach((b) => b.columns.forEach((c, i) => {
     if (!c.canon) return;
-    const label = `${inSeriesTop() ? b.title + ' · ' : ''}${b.labels.column} ${numeral(b, i)}`;
+    const label = `${inSeriesTop() ? b.title + ' · ' : ''}${partLabel(b, i)}`;
     const must = b.cards.filter((k) => k.colId === c.id).flatMap((k) => k.flags.filter((f) => f.must && !f.done).map((f) => ({ f, k })));
     for (const { f, k } of must) { const key = `mustflag:${f.id}`; if (!dismissed(key)) out.push({ group: 'Revisions', sev: 'bad', key, text: `Published, but “${f.text}” is still open`, sub: where(k), k }); }
     const missing = (b.passes || []).filter((x) => x.required && !c.passes[x.id]);

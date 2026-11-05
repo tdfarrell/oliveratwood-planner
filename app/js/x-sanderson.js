@@ -3,7 +3,7 @@
 // outlining, the Avalanche, epigraphs, connections between books, the
 // iceberg of worldbuilding, and a foreshadowing pass.
 import { h, icon, clear, append, confirmDanger, ask, toast } from './dom.js';
-import { uid, numeral, ARCHETYPES, PROMISE_TYPES, PROMISE_SIZES, CONN_KINDS, VISIBILITY, BOOK_KINDS } from './model.js';
+import { uid, numeral, partLabel, ARCHETYPES, PROMISE_TYPES, PROMISE_SIZES, CONN_KINDS, VISIBILITY, BOOK_KINDS } from './model.js';
 import { S, store, P, isSeries, inSeriesTop, change, render, go, href, phref, shref, openCard, cardInfo, bookSeq, readingSeq, cardOptions } from './app.js';
 import { chars, units, positions, cardBtn, sel, pageHead, panel, empty, dismissed, dismissBtn, nameOf } from './x-common.js';
 import { secretRun } from './x-people.js';
@@ -21,8 +21,7 @@ export const tag = (text, fg, bg, title) => h('span', { class: 'stag', style: { 
 export const typeTag = (q) => (q.type && PT[q.type] ? tag(PT[q.type].l, PT[q.type].fg, PT[q.type].bg) : null);
 const warn = (sev, k, text, ...act) => panel('xwarn xwarn--' + sev, h('span', { class: 'xwarn__k' }, k), h('span', {}, text), act.length ? h('span', { class: 'xwarn__act' }, act) : null);
 const okLine = (text) => h('p', { class: 'ok small' }, icon('check'), ' ', text);
-const colWord = (b, c) => (c && c.interlude ? 'Interlude' : b.labels.column);
-const where = (k) => { const { b } = cardInfo(k); return `${isSeries() ? b.title + ' · ' : ''}${colWord(b, b.columns.find((c) => c.id === k.colId))} ${cardInfo(k).num}`; };
+const where = (k) => `${isSeries() ? cardInfo(k).b.title + ' · ' : ''}${cardInfo(k).part}`;
 const findCard = (id) => (id ? readingSeq().map(({ k }) => k).find((k) => k.id === id) || null : null);
 const sceneSel = (p, value, on, placeholder = 'Pick a scene…', label = 'Scene') => h('select', { class: 'input input--sm', 'aria-label': label, onchange: (e) => on(e.target.value || null) },
   h('option', { value: '' }, placeholder), cardOptions(p, value));
@@ -441,7 +440,7 @@ export function viewEnding(p) {
   const issues = endingIssues(p);
   const lastCol = [...p.columns].reverse().find((c) => !c.interlude) || p.columns[p.columns.length - 1];
   const addBeat = () => change(() => { p.ending.push({ id: uid(), text: '', colId: lastCol ? lastCol.id : null, needs: [] }); });
-  const colOpts = [['', 'No part yet'], ...p.columns.map((c, i) => [c.id, `${colWord(p, c)} ${numeral(p, i)}${c.title ? ': ' + c.title : ''}`])];
+  const colOpts = [['', 'No part yet'], ...p.columns.map((c, i) => [c.id, `${partLabel(p, i)}${c.title ? ': ' + c.title : ''}`])];
   return h('div', { class: 'wrap wrap--wide x' },
     pageHead('Ending first', blurb, h('button', { class: 'btn btn--primary', type: 'button', onclick: addBeat }, icon('plus'), ' Climax beat')),
     h('div', { class: 'xcols' },
@@ -516,7 +515,7 @@ export function viewAvalanche(p) {
     pageHead('Avalanche', blurb, h('label', { class: 'xinline' }, 'Climax window', sel(WINDOWS, p.aval.window, (v) => change(() => { p.aval.window = v; }), 'Climax window'))),
     !p.cards.some(isPayoff) ? empty('No payoffs tagged yet', 'A scene is a payoff when it pays off a promise (the card’s “Promises” section), or when you tick “This scene is a payoff for its thread”.') :
     [panel('aval',
-      h('div', { class: 'aval__row aval__row--head' }, h('span', {}), h('div', { class: 'aval__lane' }, A.U.map((u) => h('span', { class: 'aval__part', style: { left: (u.i / A.U.length) * 100 + '%' } }, `${u.c.interlude ? 'Int.' : p.labels.column} ${numeral(p, u.i)}`)))),
+      h('div', { class: 'aval__row aval__row--head' }, h('span', {}), h('div', { class: 'aval__lane' }, A.U.map((u) => h('span', { class: 'aval__part', style: { left: (u.i / A.U.length) * 100 + '%' } }, partLabel(p, u.i))))),
       h('div', { class: 'aval__body', style: { '--winf': String(A.winStart) } },
         A.threads.map((t) => h('div', { class: 'aval__row' + (t.pays.length && !t.inside ? ' is-out' : '') },
           h('span', { class: 'aval__name', style: { '--c': t.r.color } }, t.r.title || 'Untitled'),
@@ -550,7 +549,7 @@ export function epigraphIssues(b) {
       if (!s) continue;
       const k = readerLearns(s);
       const kr = k ? colRank(cardInfo(k).b, cardInfo(k).b.columns.find((x) => x.id === k.colId)) : Infinity;
-      if (kr > colRank(b, c)) { const key = `epi:${c.id}:${sid}`; if (!dismissed(key)) out.push({ key, c, s, k, text: k ? `The epigraph of ${b.labels.column} ${numeral(b, b.columns.indexOf(c))} gives away “${s.name}” before ${where(k)}` : `The epigraph of ${b.labels.column} ${numeral(b, b.columns.indexOf(c))} reveals “${s.name}”, which the story never reveals` }); }
+      if (kr > colRank(b, c)) { const key = `epi:${c.id}:${sid}`; if (!dismissed(key)) out.push({ key, c, s, k, text: k ? `The epigraph of ${partLabel(b, b.columns.indexOf(c))} gives away “${s.name}” before ${where(k)}` : `The epigraph of ${partLabel(b, b.columns.indexOf(c))} reveals “${s.name}”, which the story never reveals` }); }
     }
   }
   return out;
@@ -567,9 +566,9 @@ export function viewEpigraphs(p) {
       const e = c.epi;
       const bad = issues.filter((x) => x.c === c);
       return h('div', { class: 'epi' + (c.interlude ? ' is-interlude' : '') },
-        h('span', { class: 'epi__part' }, `${colWord(p, c)} ${numeral(p, i)}`, c.title ? h('span', { class: 'muted small' }, c.title) : null),
+        h('span', { class: 'epi__part' }, `${partLabel(p, i)}`, c.title ? h('span', { class: 'muted small' }, c.title) : null),
         h('div', { class: 'epi__main' },
-          h('textarea', { class: 'input epi__text', rows: 2, value: e.text, placeholder: '“A line from an in-world document…”', 'aria-label': `Epigraph for ${p.labels.column} ${numeral(p, i)}`, oninput: (ev) => change(() => { e.text = ev.target.value; }, { render: false }) }),
+          h('textarea', { class: 'input epi__text', rows: 2, value: e.text, placeholder: '“A line from an in-world document…”', 'aria-label': `Epigraph for ${partLabel(p, i)}`, oninput: (ev) => change(() => { e.text = ev.target.value; }, { render: false }) }),
           h('span', { class: 'xrow small' }, 'From',
             h('input', { class: 'input input--sm', list: 'epi-src', value: e.src, placeholder: 'The Warden’s Ledger', 'aria-label': 'Source document', oninput: (ev) => change(() => { e.src = ev.target.value; }, { render: false }) }),
             h('input', { class: 'input input--sm', value: e.where, placeholder: 'entry 14', 'aria-label': 'Where in the source', oninput: (ev) => change(() => { e.where = ev.target.value; }, { render: false }) })),
@@ -594,7 +593,7 @@ function connEnd(series, end, onSet, label) {
       h('option', { value: '' }, 'Which book?'), series.books.map((x) => h('option', { value: x.id, selected: x.id === end.bookId }, `${x.title || 'Untitled'} · ${BK[x.bookKind] || 'Main series'}`))),
     b ? h('select', { class: 'input input--sm', 'aria-label': `${label}: scene`, onchange: (e) => onSet({ cardId: e.target.value || null }) },
       h('option', { value: '' }, 'Anywhere in the book'),
-      b.columns.map((c, i) => { const cs = b.cards.filter((k) => k.colId === c.id); return cs.length ? h('optgroup', { label: `${b.labels.column} ${numeral(b, i)}${c.title ? ': ' + c.title : ''}` }, cs.map((k) => h('option', { value: k.id, selected: k.id === end.cardId }, k.title || 'Untitled scene'))) : null; })) : null,
+      b.columns.map((c, i) => { const cs = b.cards.filter((k) => k.colId === c.id); return cs.length ? h('optgroup', { label: `${partLabel(b, i)}${c.title ? ': ' + c.title : ''}` }, cs.map((k) => h('option', { value: k.id, selected: k.id === end.cardId }, k.title || 'Untitled scene'))) : null; })) : null,
     h('input', { class: 'input input--sm', value: end.detail || '', placeholder: 'Detail (optional)', 'aria-label': `${label}: detail`, oninput: (e) => onSet({ detail: e.target.value }, false) }));
 }
 const visPill = (v) => tag(VIS[v].l, VIS[v].fg, VIS[v].bg, VIS[v].d);

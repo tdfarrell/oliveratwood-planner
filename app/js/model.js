@@ -55,18 +55,31 @@ export function roman(n) {
   return out;
 }
 
-// Interludes sit between parts and don't take a number of their own: the
-// second interlude after Part II is "II·2", and Part III is still III.
+// A part is a numbered chapter, or a prologue, interlude or epilogue that
+// doesn't take a number: Prologue, Chapter 1, Chapter 2, Interlude, Chapter 3…
+export const PART_KINDS = [['chapter', 'Numbered'], ['prologue', 'Prologue'], ['interlude', 'Interlude'], ['epilogue', 'Epilogue']];
+const SPECIAL = { prologue: 'Prologue', interlude: 'Interlude', epilogue: 'Epilogue' };
+export const kindOf = (c) => (c && SPECIAL[c.kind] ? c.kind : c && c.interlude ? 'interlude' : 'chapter');
+export const isSpecial = (c) => kindOf(c) !== 'chapter';
+// The number of a chapter, counting only numbered chapters; for a prologue,
+// interlude or epilogue, its name ("Interlude 2" when a book has several).
 export function numeral(project, index) {
   const cols = project.columns || [];
   const fmt = (n) => (project.labels.numerals === 'arabic' ? String(n) : roman(n));
-  if (!cols.some((c) => c && c.interlude)) return fmt(index + 1);
-  let n = 0, sub = 0;
-  for (let i = 0; i <= index && i < cols.length; i++) {
-    if (cols[i] && cols[i].interlude) sub++; else { n++; sub = 0; }
+  const kind = kindOf(cols[index]);
+  if (kind !== 'chapter') {
+    const same = cols.filter((c) => kindOf(c) === kind);
+    return same.length > 1 ? `${SPECIAL[kind]} ${same.indexOf(cols[index]) + 1}` : SPECIAL[kind];
   }
+  let n = 0;
+  for (let i = 0; i <= index && i < cols.length; i++) if (kindOf(cols[i]) === 'chapter') n++;
   if (index >= cols.length) n += index - cols.length + 1;
-  return cols[index] && cols[index].interlude ? `${n ? fmt(n) : '0'}·${sub}` : fmt(n);
+  return fmt(n);
+}
+// "Chapter 3", or just "Prologue".
+export function partLabel(project, index) {
+  const c = (project.columns || [])[index];
+  return isSpecial(c) ? numeral(project, index) : `${project.labels.column} ${numeral(project, index)}`;
 }
 
 const f = (name, type, extra = {}) => ({ id: uid(), name, type, ...extra });
@@ -589,7 +602,7 @@ export function makeBeats(key, project) {
   const st = STRUCTURES[key] || STRUCTURES.blank;
   if (key === 'serial' && project && project.columns) {
     const n = project.columns.length || 1;
-    return project.columns.map((c, i) => ({ id: uid(), name: `${project.labels.column} ${numeral(project, i)}: hook and cliffhanger`, text: '', hint: 'What pulls readers in, and what makes them come back next time.',
+    return project.columns.map((c, i) => ({ id: uid(), name: `${partLabel(project, i)}: hook and cliffhanger`, text: '', hint: 'What pulls readers in, and what makes them come back next time.',
       pct: Math.round(((i + 0.5) / n) * 100), tension: 40 + ((i % 2) ? 25 : 0), colId: c.id, parent: null }));
   }
   return (st.beats || []).map((b) => ({ id: uid(), name: b.name, text: '', hint: b.hint, pct: b.pct, tension: b.tension, colId: null, parent: null }));
@@ -696,7 +709,8 @@ export function normalizeBook(b) {
   b.aval = Object.assign({ window: 'last' }, b.aval);
   for (const c of b.columns || []) {
     c.passes = c.passes && typeof c.passes === 'object' ? c.passes : {};
-    c.interlude = !!c.interlude;
+    c.kind = kindOf(c);
+    c.interlude = c.kind === 'interlude';
     c.epi = Object.assign({ text: '', src: '', where: '', reveals: [], clue: false }, c.epi);
   }
   for (const r of b.rows || []) { r.flash = !!r.flash; r.focus = r.focus || null; }

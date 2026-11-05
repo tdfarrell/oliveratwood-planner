@@ -7,7 +7,7 @@ import { chars, nameOf, cardBtn, seg, sel, pageHead, panel, empty } from './x-co
 
 const G = () => P().game;
 const RC = Object.fromEntries(RARITIES);
-const where = (k) => `${isSeries() ? cardInfo(k).b.title + ' · ' : ''}${cardInfo(k).b.labels.column} ${cardInfo(k).num}`;
+const where = (k) => `${isSeries() ? cardInfo(k).b.title + ' · ' : ''}${cardInfo(k).part}`;
 const ENCH = [['ench', 'Enchantment'], ['bonus', 'Bonus'], ['curse', 'Curse']];
 
 // ======================================================================

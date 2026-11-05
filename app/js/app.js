@@ -1,5 +1,5 @@
 import { h, append, clear, icon, openDialog, choose, confirmDanger, ask, toast, autosize } from './dom.js';
-import { TEMPLATES, PALETTE, FIELD_TYPES, STATUSES, STATUS_SHORT, uid, slugify, numeral, roman, normalize, valueText, actsOn, syncActs,
+import { TEMPLATES, PALETTE, FIELD_TYPES, STATUSES, STATUS_SHORT, uid, slugify, numeral, partLabel, isSpecial, kindOf, PART_KINDS, roman, normalize, valueText, actsOn, syncActs,
   prepare, newSeries, newBook, importProject, findDuplicates, mergeEntities, LINE_COLORS, LINK_KINDS, BOOK_KINDS,
   GAME_EVENTS, normalizeEntity, blankSheet, applyEvent, describeEvent, cloneSheet, STRUCTURES, makeBeats, WORLD_KEYS } from './model.js';
 import { viewPromises, viewWhatifs, viewBraid, viewRevisions, sceneExtras, cardExtras, publishCheck, branchBanner } from './x-story.js';
@@ -67,7 +67,7 @@ const bookOf = (k) => (isSeries() ? S.project.books.find((b) => b.cards.includes
 function cardInfo(k) {
   const b = bookOf(k) || P();
   const i = b.columns.findIndex((c) => c.id === k.colId);
-  return { b, i, num: i >= 0 ? numeral(b, i) : '?', row: b.rows.find((r) => r.id === k.rowId) };
+  return { b, i, num: i >= 0 ? numeral(b, i) : '?', part: i >= 0 ? partLabel(b, i) : `${b.labels.column} ?`, row: b.rows.find((r) => r.id === k.rowId) };
 }
 const otherBook = (b) => isSeries() && b !== P();
 
@@ -92,7 +92,7 @@ const typeOf = (e) => e && P().types.find((t) => t.id === e.typeId);
 const colIndex = (id) => P().columns.findIndex((c) => c.id === id);
 const lower = (s) => (s.length > 1 && s === s.toUpperCase() ? s : s.charAt(0).toLowerCase() + s.slice(1));
 const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
-const colName = (p, c) => `${c.interlude ? 'Interlude' : p.labels.column} ${numeral(p, colIndex(c.id))}`;
+const colName = (p, c) => `${partLabel(p, colIndex(c.id))}`;
 
 function cardLabel(p, k) {
   const { b, num } = cardInfo(k);
@@ -793,13 +793,15 @@ function viewGrid(p) {
 
 function colHeader(p, c, i) {
   const n = p.cards.filter((k) => k.colId === c.id).length;
-  const el = h('div', { class: 'colhead' + (c.canon ? ' is-canon' : '') + (c.interlude ? ' colhead--interlude' : ''), role: 'button', tabindex: '0', title: `Edit ${c.interlude ? 'interlude' : lower(p.labels.column)} (drag to move)`,
+  const special = isSpecial(c);
+  const el = h('div', { class: 'colhead' + (c.canon ? ' is-canon' : '') + (c.interlude ? ' colhead--interlude' : '') + (special ? ' colhead--special colhead--' + kindOf(c) : ''), role: 'button', tabindex: '0', title: `Edit ${special ? lower(partLabel(p, i)) : lower(p.labels.column)} (drag to move)`,
     onclick: () => editColumn(c.id), onkeydown: (e) => { if (e.key === 'Enter') editColumn(c.id); } },
   icon('grip', 'grip'),
-  h('span', { class: 'colhead__num' }, numeral(p, i)),
+  special ? null : h('span', { class: 'colhead__num' }, numeral(p, i)),
   h('span', { class: 'colhead__text' },
-    h('span', { class: 'colhead__title' + (c.title ? '' : ' muted') }, c.title || `${c.interlude ? 'Interlude' : p.labels.column} ${numeral(p, i)}`),
+    h('span', { class: 'colhead__title' + (c.title || special ? '' : ' muted') + (special && !c.title ? ' colhead__title--kind' : '') }, c.title || partLabel(p, i)),
     h('span', { class: 'colhead__meta' },
+      special && c.title ? h('span', { class: 'pill pill--kind' }, partLabel(p, i)) : null,
       c.interlude && c.pov ? h('span', { class: 'pill pill--interlude' }, c.pov) : null,
       c.epi && c.epi.text ? h('span', { class: 'colhead__epi', title: c.epi.text + (c.epi.src ? ` (${c.epi.src})` : '') }, '❝') : null,
       c.canon ? h('span', { class: 'pill pill--canon' }, icon('lock'), 'Published') : null,
@@ -825,7 +827,7 @@ function actHeader(p, a, i) {
   a.title ? h('span', { class: 'acthead__title' }, a.title) : null,
   h('span', { class: 'spacer' }),
   (() => { const ids = new Set(cols.map((c) => c.id)); const w = wordsOf(p.cards.filter((k) => ids.has(k.colId))); return w || a.wordGoal ? h('span', { class: wordClass(w, a.wordGoal) + ' acthead__words' }, wordText(w, a.wordGoal)) : null; })(),
-  cols.length ? h('span', { class: 'acthead__range' }, first === last ? `${p.labels.column} ${numeral(p, first)}` : `${p.labels.column}s ${numeral(p, first)}–${numeral(p, last)}`) : null);
+  cols.length ? h('span', { class: 'acthead__range' }, actRange(p, cols)) : null);
   dragSource(el, 'act', a.id);
   dropTarget(el, { act: 'x', col: 'into' }, (it, after) => {
     if (it.kind === 'act') moveAct(it.id, a.id, after);
@@ -1044,11 +1046,21 @@ function moveCard(id, colId, rowId, beforeId) {
   });
 }
 
+// "Chapters 4–9" for an act, counting only numbered chapters ("Prologue, Chapters 1–3").
+function actRange(p, cols) {
+  const nums = cols.filter((c) => !isSpecial(c)).map((c) => colIndex(c.id));
+  const specials = cols.filter(isSpecial).map((c) => partLabel(p, colIndex(c.id)));
+  const range = !nums.length ? '' : nums.length === 1 ? partLabel(p, nums[0]) : `${p.labels.column}s ${numeral(p, nums[0])}–${numeral(p, nums[nums.length - 1])}`;
+  const first = cols[0] && isSpecial(cols[0]) ? [partLabel(p, colIndex(cols[0].id))] : [];
+  const lastS = cols.length > 1 && isSpecial(cols[cols.length - 1]) && kindOf(cols[cols.length - 1]) === 'epilogue' ? [partLabel(p, colIndex(cols[cols.length - 1].id))] : [];
+  return [...first.filter((x) => x.startsWith('Prologue')), range, ...lastS].filter(Boolean).join(', ') || specials.join(', ');
+}
+
 function addColumn(actId, interlude = false) {
   const p = P();
   const act = actsOn(p) ? (actId || p.acts[p.acts.length - 1].id) : undefined;
   change((p) => {
-    p.columns.push({ id: uid(), actId: act, title: '', teaser: '', recap: '', notes: '', date: '', canon: false, interlude, pov: '', seeds: '', passes: {}, epi: { text: '', src: '', where: '', reveals: [], clue: false } });
+    p.columns.push({ id: uid(), actId: act, title: '', teaser: '', recap: '', notes: '', date: '', canon: false, kind: interlude ? 'interlude' : 'chapter', interlude, pov: '', seeds: '', passes: {}, epi: { text: '', src: '', where: '', reveals: [], clue: false } });
     syncActs(p);
   });
   if (!actId) requestAnimationFrame(() => { const s = document.querySelector('.grid-scroll'); if (s) s.scrollLeft = s.scrollWidth; });
@@ -1159,10 +1171,11 @@ function editCard(id, isNew = false, after = null) {
   };
   drawSetup();
 
-  const moveCol = h('select', { class: 'input', 'aria-label': p.labels.column, onchange: (e) => upd((c) => { c.colId = e.target.value; }) },
-    p.columns.map((c, i) => h('option', { value: c.id, selected: c.id === k().colId }, `${p.labels.column} ${numeral(p, i)}${c.title ? ': ' + c.title : ''}`)));
-  const moveRow = h('select', { class: 'input', 'aria-label': p.labels.row, onchange: (e) => upd((c) => { c.rowId = e.target.value; }) },
-    p.rows.map((r) => h('option', { value: r.id, selected: r.id === k().rowId }, r.title)));
+  const moved = () => { const c = k(); const at = p.cards.indexOf(c); p.cards.splice(at, 1); p.cards.push(c); };
+  const moveCol = h('select', { class: 'input', 'aria-label': p.labels.column, onchange: (e) => { change(() => { k().colId = e.target.value; moved(); }); } },
+    p.columns.map((c, i) => h('option', { value: c.id, selected: c.id === k().colId }, `${partLabel(p, i)}${c.title ? ': ' + c.title : ''}`)));
+  const moveRow = h('select', { class: 'input', 'aria-label': p.labels.row, onchange: (e) => { change(() => { k().rowId = e.target.value; moved(); }); } },
+    p.rows.map((r) => h('option', { value: r.id, selected: r.id === k().rowId }, r.title || 'Untitled')));
 
   const body = [
     col && col.canon ? h('p', { class: 'banner' }, icon('lock'), `${colName(p, col)} is published. Readers have already seen this.`) : null,
@@ -1174,6 +1187,11 @@ function editCard(id, isNew = false, after = null) {
       h('div', { class: 'seg', role: 'radiogroup' }, STATUSES.map(([v, l]) => h('label', { class: 'seg__opt st-' + v },
         h('input', { type: 'radio', name: 'card-status', value: v, checked: k().status === v, onchange: () => upd((c) => { c.status = v; }) }),
         h('span', {}, h('i', { class: 'legend__dot' }), l))))),
+    h('div', { class: 'field' }, h('span', { class: 'field__label' }, 'Where'),
+      h('span', { class: 'field__hint' }, `Change these to move the card to another ${lower(p.labels.column)} or ${lower(p.labels.row)}.`),
+      h('div', { class: 'row2 cardwhere' },
+        h('label', { class: 'field' }, h('span', { class: 'field__label field__label--sm' }, p.labels.column), moveCol),
+        h('label', { class: 'field' }, h('span', { class: 'field__label field__label--sm' }, p.labels.row), moveRow))),
     h('div', { class: 'field' }, h('span', { class: 'field__label' }, 'In this scene'),
       p.types.length ? entityPicker(p, () => k().entityIds, (ids) => upd((c) => { c.entityIds = ids; }))
         : h('p', { class: 'muted small' }, 'Add entry types (characters, places…) in the Project tab to link them here.')),
@@ -1186,8 +1204,6 @@ function editCard(id, isNew = false, after = null) {
     sceneExtras(p, k, upd, () => d),
     h('label', { class: 'field' }, h('span', { class: 'field__label' }, 'Notes'),
       autosize(h('textarea', { class: 'input', rows: 2, value: k().notes, placeholder: 'Anything else: lines of dialogue, research, doubts', oninput: (e) => upd((c) => { c.notes = e.target.value; }) }))),
-    h('details', { class: 'more' }, h('summary', {}, 'Move'),
-      h('div', { class: 'row2' }, moveCol, moveRow)),
   ];
 
   const d = openDialog({
@@ -1223,7 +1239,7 @@ function cardOptions(p, value, selfId) {
   const books = isSeries() ? [p, ...S.project.books.filter((b) => b !== p)] : [p];
   return books.flatMap((b) => b.columns.map((c, i) => {
     const cards = b.cards.filter((x) => x.colId === c.id && x.id !== selfId);
-    const label = `${otherBook(b) ? b.title + ' · ' : ''}${c.interlude ? 'Interlude' : b.labels.column} ${numeral(b, i)}${c.title ? ': ' + c.title : ''}`;
+    const label = `${otherBook(b) ? b.title + ' · ' : ''}${partLabel(b, i)}${c.title ? ': ' + c.title : ''}`;
     return cards.length ? h('optgroup', { label },
       cards.map((x) => h('option', { value: x.id, selected: x.id === value }, x.title || 'Untitled scene'))) : null;
   }));
@@ -1322,17 +1338,19 @@ function editColumn(id) {
   const n = p.cards.filter((k) => k.colId === id).length;
 
   const d = openDialog({
-    title: `${p.labels.column} ${numeral(p, i)}`,
+    title: `${partLabel(p, i)}`,
     body: [
       text('Title', 'title', 'Title of this ' + lower(p.labels.column)),
       actsOn(p) ? h('label', { class: 'field' }, h('span', { class: 'field__label' }, p.labels.act),
         h('select', { class: 'input', onchange: (e) => change((p) => { c().actId = e.target.value; syncActs(p); }, { render: false }) },
           p.acts.map((a, ai) => h('option', { value: a.id, selected: a.id === c().actId }, `${p.labels.act} ${roman(ai + 1)}${a.title ? ': ' + a.title : ''}`)))) : null,
       h('div', { class: 'row2' },
-        h('label', { class: 'check check--box' }, h('input', { type: 'checkbox', checked: !!c().interlude, onchange: (e) => upd((c) => { c.interlude = e.target.checked; }) }),
-          h('span', {}, h('strong', {}, 'Interlude'), h('br'), h('span', { class: 'muted small' }, 'A side chapter between parts; doesn’t take a number'))),
-        text('Interlude point of view', 'pov', 'Whose eyes: the ferryman, Old Pell…')),
-      text('Sets up', 'seeds', 'What this interlude plants for later'),
+        h('label', { class: 'field' }, h('span', { class: 'field__label' }, 'Kind'),
+          h('span', { class: 'field__hint' }, `Prologues, interludes and epilogues don’t take a ${lower(p.labels.column)} number.`),
+          h('select', { class: 'input', 'aria-label': 'Kind', onchange: (e) => { upd((c) => { c.kind = e.target.value; c.interlude = c.kind === 'interlude'; }); render(); } },
+            PART_KINDS.map(([v, l]) => h('option', { value: v, selected: kindOf(c()) === v }, v === 'chapter' ? `${p.labels.column} (numbered)` : l)))),
+        text('Point of view', 'pov', 'Whose eyes, if not the usual: the ferryman, Old Pell…')),
+      kindOf(c()) === 'interlude' ? text('Sets up', 'seeds', 'What this interlude plants for later') : null,
       text('One-line teaser', 'teaser', 'Shown on the home page and in link previews'),
       text('Previously…', 'recap', 'A short recap for returning readers', true),
       text('Planning notes', 'notes', 'Goals for this part, the cliffhanger, what must be true by the end', true),
@@ -1354,7 +1372,7 @@ function editColumn(id) {
     actions: [
       h('button', { class: 'btn btn--ghost btn--danger', type: 'button', onclick: async () => {
         d.close();
-        if (await confirmDanger(`Delete ${p.labels.column} ${numeral(p, i)}?`, n ? `Its ${plural(n, 'card')} will be deleted too.` : 'It has no cards.')) {
+        if (await confirmDanger(`Delete ${partLabel(p, i)}?`, n ? `Its ${plural(n, 'card')} will be deleted too.` : 'It has no cards.')) {
           change((p) => { p.columns = p.columns.filter((x) => x.id !== id); p.cards = p.cards.filter((k) => k.colId !== id); });
         }
       } }, icon('trash'), ' Delete'),
@@ -1442,7 +1460,7 @@ function exportColumn(id) {
   const ta = h('textarea', { class: 'input mono', rows: 14, readonly: true, value: md });
   const copy = async (text, what) => { try { await navigator.clipboard.writeText(text); toast(`${what} copied`); } catch { ta.select(); toast('Select and copy with Ctrl+C'); } };
   openDialog({
-    title: `Export ${p.labels.column} ${numeral(p, i)}`,
+    title: `Export ${partLabel(p, i)}`,
     wide: true,
     body: [
       h('p', { class: 'muted' }, 'A draft episode for oliveratwood.com, with your scene cards as the outline. It’s marked as a draft, so nothing goes live until you turn draft off in the editor.'),
@@ -1583,7 +1601,7 @@ function ledgerEditor(p, get, set) {
           onchange: (e) => { const l = rows(); l[i].colId = e.target.value; set(l); } },
         h('option', { value: '' }, 'Not revealed yet'),
         isSeries()
-          ? S.project.books.map((b) => h('optgroup', { label: b.title }, b.columns.map((c, ci) => h('option', { value: c.id, selected: r.colId === c.id }, `Revealed in ${b.labels.column} ${numeral(b, ci)}`))))
+          ? S.project.books.map((b) => h('optgroup', { label: b.title }, b.columns.map((c, ci) => h('option', { value: c.id, selected: r.colId === c.id }, `Revealed in ${partLabel(b, ci)}`))))
           : p.columns.map((c, ci) => h('option', { value: c.id, selected: r.colId === c.id }, `Revealed in ${numeral(p, ci)}`))),
         h('button', { class: 'iconbtn', type: 'button', 'aria-label': 'Remove', onclick: () => { set(rows().filter((_, j) => j !== i)); draw(); } }, icon('x'))));
     });
@@ -1863,7 +1881,7 @@ function colRef(colId) {
     const i = b.columns.findIndex((c) => c.id === colId);
     if (i >= 0) {
       const c = b.columns[i];
-      return { b, c, i, order: bi * 10000 + i, label: `${isSeries() ? b.title + ' · ' : ''}${c.interlude ? 'Interlude' : b.labels.column} ${numeral(b, i)}${c.title ? ': ' + c.title : ''}` };
+      return { b, c, i, order: bi * 10000 + i, label: `${isSeries() ? b.title + ' · ' : ''}${partLabel(b, i)}${c.title ? ': ' + c.title : ''}` };
     }
   }
   return null;
@@ -2528,7 +2546,7 @@ function viewTimeline(series) {
     const c = colorOf(it.b);
     const ci = cardInfo(it.k);
     const w = it.k.when;
-    const tip = `${it.b.title} · ${ci.b.labels.column} ${ci.num} · ${it.k.title || 'Untitled scene'}` + (w && order === 'world' ? ` · ${cal.years[w.y]}, ${cal.parts[w.p]}${w.day ? ' (' + w.day + ')' : ''}` : '') + ` · ${STAGE_LABEL[it.stage]}` + agesText(it.k);
+    const tip = `${it.b.title} · ${ci.part} · ${it.k.title || 'Untitled scene'}` + (w && order === 'world' ? ` · ${cal.years[w.y]}, ${cal.parts[w.p]}${w.day ? ' (' + w.day + ')' : ''}` : '') + ` · ${STAGE_LABEL[it.stage]}` + agesText(it.k);
     return h('button', { class: `tl-chip tl-chip--${it.stage}` + (hit(it) ? '' : ' is-dim'), type: 'button', title: tip,
       style: { left: it.x - 9 + 'px', top: it.top + 'px', '--c': c }, onclick: () => openCard(it.k.id) },
     h('span', { class: 'tl-chip__dot st-' + it.k.status }),
@@ -2739,7 +2757,7 @@ function sheetAt(e, card) {
 
 function stepWhere(st) {
   const ci = cardInfo(st.k);
-  return `${isSeries() ? st.b.title + ' · ' : ''}${ci.b.labels.column} ${ci.num}`;
+  return `${isSeries() ? st.b.title + ' · ' : ''}${ci.part}`;
 }
 
 // ---------- The sheet itself ----------
@@ -3063,7 +3081,7 @@ function progressTimeline(books, inScope, chars, progress, metric) {
       const cards = inScope.filter((x) => x.b === b && x.k.colId === c.id);
       cards.forEach((x, j) => pos.set(x.k, off + 18 + j * STEP));
       const w = Math.max(120, 18 + cards.length * STEP + 20);
-      (multi ? r2 : r1).push({ label: `${b.labels.column} ${numeral(b, ci)}${c.title ? ' · ' + c.title : ''}`, left: off, width: w });
+      (multi ? r2 : r1).push({ label: `${partLabel(b, ci)}${c.title ? ' · ' + c.title : ''}`, left: off, width: w });
       if (!multi) r2.push({ label: plural(cards.length, 'scene'), left: off, width: w });
       lines.push({ left: off, strong: ci === 0 });
       off += w;
@@ -3237,7 +3255,7 @@ function plannedCol(p, b) {
   const n = p.columns.length;
   return n ? Math.min(n - 1, Math.floor((b.pct / 100) * n)) : -1;
 }
-const colLabel = (p, i) => (i >= 0 ? `${p.labels.column} ${numeral(p, i)}` : '—');
+const colLabel = (p, i) => (i >= 0 ? `${partLabel(p, i)}` : '—');
 // Book beats that move a series beat forward.
 const childBeats = (series, sb) => series.books.flatMap((b) => b.flow.beats.filter((x) => x.parent === sb.id).map((x) => ({ b, x })));
 const seriesBeatDone = (series, sb) => childBeats(series, sb).some(({ b, x }) => beatScenes(b, x).length);
@@ -3337,6 +3355,26 @@ function addBeat(f) {
   requestAnimationFrame(() => document.querySelector(`[data-beat="${b.id}"] .beat__name`)?.focus());
 }
 
+// Pick an existing scene for a beat. Its planned part comes first; scenes that
+// already serve another beat say so, since a scene serves one beat at a time.
+function attachScene(p, f, b) {
+  const others = p.cards.filter((k) => k.beatId !== b.id);
+  if (!others.length) return null;
+  const planned = plannedCol(p, b);
+  const order = p.columns.map((c, i) => i);
+  if (planned >= 0) order.sort((x, y) => (x === planned ? -1 : y === planned ? 1 : x - y));
+  const beatNo = (id) => f.beats.findIndex((x) => x.id === id) + 1;
+  return h('select', { class: 'input input--sm beat__attach', 'aria-label': `Attach an existing scene to ${b.name || 'this beat'}`,
+    onchange: (e) => { const k = p.cards.find((x) => x.id === e.target.value); if (k) change(() => { k.beatId = b.id; }); } },
+    h('option', { value: '' }, '+ Attach a scene…'),
+    order.map((ci) => {
+      const c = p.columns[ci];
+      const cs = bookSeq(p).filter((k) => k.colId === c.id && k.beatId !== b.id);
+      return cs.length ? h('optgroup', { label: `${partLabel(p, ci)}${c.title ? ': ' + c.title : ''}${ci === planned ? ' (planned)' : ''}` },
+        cs.map((k) => h('option', { value: k.id }, `${k.title || 'Untitled scene'}${k.beatId && beatNo(k.beatId) ? ` · now in beat ${beatNo(k.beatId)}` : ''}`))) : null;
+    }));
+}
+
 function newSceneForBeat(p, b) {
   const ci = plannedCol(p, b);
   if (ci < 0 || !p.rows.length) { toast(`Add a ${lower(p.labels.column)} and a ${lower(p.labels.row)} on the grid first.`); return; }
@@ -3408,8 +3446,11 @@ function beatEditor(p, f, b, i, series) {
             series.flow.beats.map((sb, si) => h('option', { value: sb.id, selected: b.parent === sb.id }, `${si + 1}. ${sb.name || 'Untitled'}`)))) : null)),
     h('div', { class: 'beat__side' },
       h('span', { class: 'beat__status' + (scenes.length ? ' is-done' : '') }, scenes.length ? plural(scenes.length, 'scene') : 'No scenes yet'),
-      scenes.map((k) => h('button', { class: 'beat__scene', type: 'button', onclick: () => openCard(k.id) }, `${cardInfo(k).num} · ${k.title || 'Untitled scene'}`)),
-      h('button', { class: 'btn btn--ghost btn--sm beat__add', type: 'button', onclick: () => newSceneForBeat(p, b) }, icon('plus'), ' Scene for this beat'),
+      scenes.map((k) => h('span', { class: 'beat__srow' },
+        h('button', { class: 'beat__scene', type: 'button', onclick: () => openCard(k.id) }, `${cardInfo(k).part} · ${k.title || 'Untitled scene'}`),
+        h('button', { class: 'iconbtn iconbtn--sm beat__unlink', type: 'button', 'aria-label': `Detach “${k.title || 'Untitled scene'}” from this beat`, title: 'Detach from this beat (the scene stays)', onclick: () => change(() => { k.beatId = null; }) }, icon('x')))),
+      attachScene(p, f, b),
+      h('button', { class: 'btn btn--ghost btn--sm beat__add', type: 'button', onclick: () => newSceneForBeat(p, b) }, icon('plus'), ' New scene for this beat'),
       h('button', { class: 'iconbtn beat__del', type: 'button', 'aria-label': 'Delete beat', title: 'Delete beat', onclick: async () => {
         if (!(await confirmDanger(`Delete “${b.name || 'this beat'}”?`, scenes.length ? `${plural(scenes.length, 'scene')} lose${scenes.length === 1 ? 's' : ''} this tag. The scenes stay.` : 'No scenes use it.'))) return;
         change(() => { f.beats = f.beats.filter((x) => x !== b); for (const k of p.cards) if (k.beatId === b.id) k.beatId = null; });

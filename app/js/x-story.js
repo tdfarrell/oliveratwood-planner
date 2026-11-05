@@ -1,7 +1,7 @@
 // Story structure: promises, what-if branches, the braid, revision flags and
 // passes, the scene checklist, and the extra sections on scene cards.
 import { h, icon, clear, append, choose, confirmDanger, ask, toast, autosize } from './dom.js';
-import { uid, numeral, FLAG_KINDS } from './model.js';
+import { uid, numeral, partLabel, FLAG_KINDS } from './model.js';
 import { S, P, isSeries, inSeriesTop, change, render, go, phref, pbase, openCard, cardInfo, bookSeq, plural, editCard, gameOn } from './app.js';
 import { units, positions, cardBtn, seg, sel, pageHead, panel, empty, dismissed, dismissBtn, chars } from './x-common.js';
 import { revealsBox, relsBox, arcsBox } from './x-people.js';
@@ -51,7 +51,7 @@ export function viewPromises(p) {
   U.forEach((u, i) => u.cards.forEach((k) => unitOf.set(k, i)));
   const inScope = Q.filter((q) => { const s = spans.get(q.id); return unitOf.has(s.rk) || unitOf.has(s.ak) || (s.r == null && s.a == null); });
   const elsewhere = Q.filter((q) => !inScope.includes(q));
-  const where = (k) => (k ? `${isSeries() ? cardInfo(k).b.title + ' · ' : ''}${cardInfo(k).b.labels.column} ${cardInfo(k).num}` : null);
+  const where = (k) => (k ? `${isSeries() ? cardInfo(k).b.title + ' · ' : ''}${cardInfo(k).part}` : null);
   const { runs } = promiseRuns(p);
   const issues = promiseIssues(p).filter((x) => !x.key.startsWith('ptone'));
 
@@ -241,7 +241,7 @@ function compareDialog(book, br) {
     src.columns.map((c, i) => {
       const seq = bookSeq(src).filter((k) => k.colId === c.id);
       const cutHere = isBranch ? d.cut.filter((k) => k.colId === c.id) : [];
-      return h('div', { class: 'cmp__part' }, h('div', { class: 'cmp__ph' }, `${src.labels.column} ${numeral(src, i)}${c.title ? ': ' + c.title : ''}`),
+      return h('div', { class: 'cmp__part' }, h('div', { class: 'cmp__ph' }, `${partLabel(src, i)}${c.title ? ': ' + c.title : ''}`),
         seq.map((k) => { const t = isBranch ? d.tag[k.id] : null; return h('div', { class: 'cmp__card' + (t ? ' is-' + t : '') }, h('span', {}, k.title || 'Untitled scene'), t ? h('span', { class: 'cmp__tag' }, t) : null); }),
         cutHere.map((k) => h('div', { class: 'cmp__card is-cut' }, h('span', {}, k.title || 'Untitled scene'), h('span', { class: 'cmp__tag' }, 'cut'))));
     }));
@@ -301,7 +301,7 @@ export function viewBraid(p) {
   parts.forEach((x, n) => {
     const end = n + 1 < parts.length ? parts[n + 1].i : seq.length;
     const ci = p.columns.indexOf(x.c);
-    lay.append(h('span', { class: 'braid__part', style: { left: x.i * W + 'px', width: (end - x.i) * W + 'px' } }, `${p.labels.column} ${numeral(p, ci)}`));
+    lay.append(h('span', { class: 'braid__part', style: { left: x.i * W + 'px', width: (end - x.i) * W + 'px' } }, `${partLabel(p, ci)}`));
   });
   for (const is of issues) {
     lay.append(h('span', { class: 'braid__flag braid__flag--' + is.kind, title: is.text, style: { left: is.i * W + 2 + 'px', width: (is.j - is.i + 1) * W - 4 + 'px', top: cy(is.rowId) - 26 + 'px' } }));
@@ -377,7 +377,7 @@ function flagsView(p) {
   for (const b of books) {
     b.columns.forEach((c, i) => {
       const items = all.filter((x) => x.b === b && x.k.colId === c.id && keep(x));
-      if (items.length) groups.push({ title: `${inSeriesTop() ? b.title + ' · ' : ''}${b.labels.column} ${numeral(b, i)}${c.title ? ' · ' + c.title : ''}`, canon: c.canon, items });
+      if (items.length) groups.push({ title: `${inSeriesTop() ? b.title + ' · ' : ''}${partLabel(b, i)}${c.title ? ' · ' + c.title : ''}`, canon: c.canon, items });
     });
   }
   return [
@@ -408,7 +408,7 @@ function passesView(p) {
       return h('th', { scope: 'col' }, h('span', { class: 'passes__ph' }, `${numeral(b, i)}`), h('span', { class: 'small ' + (n === b.passes.length ? 'ok-text' : 'muted') }, `${n}/${b.passes.length}`));
     }))),
     h('tbody', {}, b.passes.map((x) => h('tr', {}, h('th', { scope: 'row' }, h('strong', {}, x.name), x.required ? h('span', { class: 'pill pill--warn pill--sm' }, 'required') : null, h('br'), h('span', { class: 'muted small' }, x.what || '')),
-      b.columns.map((c, i) => h('td', {}, h('label', { class: 'passes__cell' }, h('input', { type: 'checkbox', checked: !!c.passes[x.id], 'aria-label': `${x.name}, ${b.labels.column} ${numeral(b, i)}`,
+      b.columns.map((c, i) => h('td', {}, h('label', { class: 'passes__cell' }, h('input', { type: 'checkbox', checked: !!c.passes[x.id], 'aria-label': `${x.name}, ${partLabel(b, i)}`,
         onchange: (e) => change(() => { if (e.target.checked) c.passes[x.id] = new Date().toISOString(); else delete c.passes[x.id]; }) }),
       c.passes[x.id] ? h('span', { class: 'small muted' }, new Date(c.passes[x.id]).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })) : null)))))))) : h('p', { class: 'muted' }, 'No passes yet.')));
 }

@@ -1925,3 +1925,18 @@ a.chip:hover { background: color-mix(in srgb, var(--c, var(--rule)) 24%, var(--s
 .notes__ed mark { background: #FFE58A; }
 .notes__ed mark[data-c="green"] { background: #BDEBC5; } .notes__ed mark[data-c="blue"] { background: #BFDDF7; }
 .notes__ed mark[data-c="pink"] { background: #F8C6D8; } .notes__ed mark[data-c="orange"] { background: #FFD1A8; }
+
+/* Prologues, interludes and epilogues: no chapter number, the name instead */
+.colhead__num--word { font-size: 1.05rem; line-height: 1.2; letter-spacing: .01em; white-space: nowrap; }
+.colhead--prologue, .colhead--epilogue { background: color-mix(in srgb, var(--accent) 6%, var(--sheet)); }
+.colhead__title--kind { font-family: var(--display); font-size: 1.35rem; font-weight: 400; }
+.colhead--prologue .colhead__title--kind, .colhead--epilogue .colhead__title--kind { color: var(--accent-text); }
+.colhead--interlude .colhead__title--kind { color: #4E3A72; }
+.pill--kind { background: var(--sheet-2); color: var(--ink-2); }
+@media (prefers-color-scheme: dark) { .colhead--interlude .colhead__title--kind { color: #D8CCF0; } }
+.field__label--sm { font-size: .74rem; font-weight: 600; letter-spacing: .05em; text-transform: uppercase; color: var(--ink-2); }
+.cardwhere { gap: .8rem; }
+.beat__srow { display: flex; align-items: center; gap: .15rem; max-width: 100%; min-width: 0; }
+.beat__srow .beat__scene { min-width: 0; }
+.beat__unlink { width: 1.6rem; height: 1.6rem; color: var(--ink-2); }
+.beat__attach { max-width: 100%; width: 100%; }

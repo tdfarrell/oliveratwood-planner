@@ -1,7 +1,7 @@
 // Characters and what they know: the filtered list, relationship web, arcs,
 // family trees, voice sheets, ages, names & spellings, and secrets.
 import { h, icon, clear, append, ask, confirmDanger, toast, autosize } from './dom.js';
-import { uid, numeral, dayOf, REL_KINDS, SECRET_KINDS, REVEAL_HOW, FAMILY_KINDS } from './model.js';
+import { uid, numeral, partLabel, dayOf, REL_KINDS, SECRET_KINDS, REVEAL_HOW, FAMILY_KINDS } from './model.js';
 import { S, P, isSeries, inSeriesTop, change, render, go, phref, pbase, openCard, cardInfo, readingSeq, entity, typeOf, plural, gameOn, viewSheet, appearances, newEntity, scopeCards } from './app.js';
 import { charType, factionType, isChar, chars, factions, factionsOf, nameOf, units, positions, cardBtn, seg, sel, pageHead, panel, empty, chipsEditor, dismissed, dismissBtn } from './x-common.js';
 import { clipsPanel, moodBoard } from './x-world.js';
@@ -9,7 +9,7 @@ import { icebergEditor } from './x-sanderson.js';
 export { isChar };
 
 const RK = Object.fromEntries(REL_KINDS.map(([v, l, c, d]) => [v, { l, c, d }]));
-const where = (k) => `${isSeries() ? cardInfo(k).b.title + ' · ' : ''}${cardInfo(k).b.labels.column} ${cardInfo(k).num}`;
+const where = (k) => `${isSeries() ? cardInfo(k).b.title + ' · ' : ''}${cardInfo(k).part}`;
 const ini = (n) => (n || '?').split(/\s+/).filter(Boolean).slice(0, 2).map((w) => w[0]).join('').toUpperCase();
 const FAC_COLORS = ['#4E3A72', '#2F6F7E', '#9A5B12', '#A8344E', '#2F7A4A', '#4B6584', '#8A3410'];
 const charColor = (e) => { if (!e) return '#5A6870'; const f = factionsOf(e)[0]; if (!f) return '#5A6870'; const i = factions().findIndex((x) => x.id === f); return FAC_COLORS[(i < 0 ? 0 : i) % FAC_COLORS.length]; };
@@ -132,7 +132,7 @@ function backgroundView(p, e, upd) {
     autosize(h('textarea', { class: 'input ' + cls, rows, value: g[key], placeholder: ph, oninput: (ev) => upd((x) => { x.bg[key] = ev.target.value; }) })));
   const cardOpts = (sel) => (isSeries() ? S.project.books : [P()]).flatMap((b) => b.columns.map((c, i) => {
     const cs = b.cards.filter((k) => k.colId === c.id);
-    return cs.length ? h('optgroup', { label: `${isSeries() ? b.title + ' · ' : ''}${c.interlude ? 'Interlude' : b.labels.column} ${numeral(b, i)}${c.title ? ': ' + c.title : ''}` },
+    return cs.length ? h('optgroup', { label: `${isSeries() ? b.title + ' · ' : ''}${partLabel(b, i)}${c.title ? ': ' + c.title : ''}` },
       cs.map((k) => h('option', { value: k.id, selected: k.id === sel }, k.title || 'Untitled scene'))) : null;
   }));
   const findK = (id) => readingSeq().map((x) => x.k).find((k) => k.id === id);

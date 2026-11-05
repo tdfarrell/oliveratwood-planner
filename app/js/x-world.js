@@ -1,11 +1,11 @@
 // The world: maps with pins, the story calendar (seasons, moons, holidays),
 // travel times, faction charts, mood boards and clippings.
 import { h, icon, clear, append, confirmDanger, ask, toast, autosize } from './dom.js';
-import { uid, numeral, dayOf, hasExactDay, MAP_KINDS } from './model.js';
+import { uid, numeral, partLabel, dayOf, hasExactDay, MAP_KINDS } from './model.js';
 import { S, P, isSeries, change, render, go, phref, pbase, openCard, cardInfo, readingSeq, entity, typeOf, plural, appearances } from './app.js';
 import { chars, places, factions, factionsOf, factionType, isPlace, nameOf, units, cardBtn, seg, sel, pageHead, panel, empty, dismissed, dismissBtn, imgUrl, fileInput, uploadImages } from './x-common.js';
 
-const where = (k) => `${isSeries() ? cardInfo(k).b.title + ' · ' : ''}${cardInfo(k).b.labels.column} ${cardInfo(k).num}`;
+const where = (k) => `${isSeries() ? cardInfo(k).b.title + ' · ' : ''}${cardInfo(k).part}`;
 
 // ======================================================================
 // Mood boards
